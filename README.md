@@ -39,7 +39,7 @@ A messaging platform is a natural fit for the actor model, where deterministic m
 #### Chatting &  Broadcasting real-time (un)messages
 <video src="./demo/Chatting.mov" width="50%" controls>
 </video>
-<video src="./demo/ChatOverview.mov" width="50%" controls>
+<video src="./demo/ChatOverview.mp4" width="50%" controls>
 </video>
 
 #### Add Friend
