@@ -1,0 +1,7 @@
+CREATE DATABASE happyfarm;
+
+CREATE USER happy WITH PASSWORD 'farm';
+
+GRANT ALL PRIVILEGES ON DATABASE happyfarm TO happy;
+
+ALTER DATABASE happyfarm OWNER TO happy;

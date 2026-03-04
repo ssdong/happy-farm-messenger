@@ -1,0 +1,92 @@
+import scala.sys.process.Process
+import sbtcrossproject.CrossPlugin.autoImport.{ crossProject, CrossType }
+
+ThisBuild / version := "0.1.0-SNAPSHOT"
+
+ThisBuild / scalaVersion := "3.7.2"
+
+lazy val shared = crossProject(JSPlatform, JVMPlatform)
+  .crossType(CrossType.Pure)
+  .settings(
+    name := "happy-farm-shared",
+    libraryDependencies ++= Seq(
+      "dev.zio"     %% "zio-schema"            % "1.7.4",
+      "dev.zio"     %% "zio-schema-derivation" % "1.7.4",
+      "com.lihaoyi" %% "upickle"               % "4.3.1"
+    )
+  )
+
+lazy val frontend = project
+  .in(file("frontend"))
+  .enablePlugins(ScalaJSPlugin)
+  .settings(
+    name                            := "happy-farm-frontend",
+    scalaVersion                    := "3.7.2",
+    scalaJSUseMainModuleInitializer := true,
+    libraryDependencies ++= Seq(
+      "org.scala-js" %%% "scalajs-dom" % "2.8.0",
+      "com.raquo"    %%% "laminar"     % "17.2.1",
+      "com.lihaoyi"  %%% "upickle"     % "4.3.1",
+      "dev.laminext" %%% "websocket"   % "0.17.1"
+    )
+  )
+  .dependsOn(shared.js)
+
+lazy val backend = project
+  .in(file("backend"))
+  .settings(
+    name         := "happy-farm-backend",
+    scalaVersion := "3.7.2",
+    libraryDependencies ++= Seq(
+      "dev.zio"                    %% "zio-http"                  % "3.4.0",
+      "dev.zio"                    %% "zio-cache"                 % "0.2.7",
+      "com.typesafe.scala-logging" %% "scala-logging"             % "3.9.5",
+      "com.typesafe"                % "config"                    % "1.4.4",
+      "com.github.pureconfig"      %% "pureconfig-generic-scala3" % "0.17.9",
+      "com.zaxxer"                  % "HikariCP"                  % "7.0.2",
+      "org.postgresql"              % "postgresql"                % "42.7.7"
+    )
+  )
+  .dependsOn(shared.jvm)
+
+lazy val fastLinkCompileCopy = taskKey[Unit]("Copy DEV JS file")
+
+val jsPath = "backend/src/main/resources/public/assets"
+
+fastLinkCompileCopy := {
+  val files = (frontend / Compile / fastLinkJSOutput).value.listFiles()
+  for (file <- files) {
+    IO.copyFile(
+      file,
+      baseDirectory.value / jsPath / file.name
+    )
+  }
+}
+
+lazy val fullLinkCompileCopy = taskKey[Unit]("Copy PROD JS file")
+
+fullLinkCompileCopy := {
+  val files = (frontend / Compile / fullLinkJSOutput).value.listFiles()
+  for (file <- files) {
+    IO.copyFile(
+      file,
+      baseDirectory.value / jsPath / file.name
+    )
+  }
+}
+
+val tailwindIn  = "backend/src/main/resources/public/assets/app.css"
+val tailwindOut = "backend/src/main/resources/public/assets/main.css"
+
+lazy val tailwindBuild = taskKey[Unit]("Build Tailwind CSS")
+
+/** Tailwind scans Scala source files and generate CSS if it encounters valid Tailwind class names
+  */
+tailwindBuild := {
+  val base = (ThisBuild / baseDirectory).value
+  val cmd  = Seq("npx", "@tailwindcss/cli", "-i", tailwindIn, "-o", tailwindOut)
+  Process(cmd, base).!
+}
+
+addCommandAlias("dev", ";fastLinkCompileCopy; tailwindBuild; backend/copyResources; backend/compile")
+addCommandAlias("prod", ";fullLinkCompileCopy; tailwindBuild; backend/copyResources; backend/compile")
