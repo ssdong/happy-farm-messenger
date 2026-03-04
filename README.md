@@ -22,37 +22,34 @@ A messaging platform is a natural fit for the actor model, where deterministic m
 
 (And Yes! I made those clickable buttons with [Pixilart](https://www.pixilart.com/))
 
-### Features
+## Features
 - Token-Based Registration – Invite-only account creation via manually generated registration tokens (Scala CLI), preventing open public sign-ups
 - Friend Management – Search for and add friends
 - Real-Time Messaging – Text chat powered by ZIO and an Actor-based backend, with delivery status, retry on failure, and unread indicators etc
 - Fault Isolation – Per-room Actors ensure failures in one chat room don’t affect others
 - Typing Indicators – Real-time user typing signals
 
-### Work In Progress
+## Work In Progress
 - Image sharing
 - Video sharing
 - Friendship deletion
 
-### Demo
+## Demo
 
-#### Chatting &  Broadcasting real-time (un)messages
+### Chatting &  Broadcasting real-time messages
 <img src="./demo/Chatting.gif" width="75%"></img>
 <img src="./demo/ChatOverview.gif" width="75%"></img>
 
-#### Add Friend
-<video src="./demo/AddFriend.mov" width="50%" controls>
-</video>
+### Add Friend 
+<img src="./demo/AddFriend.gif" width="75%"></img>
 
-#### Network glitches handling
-<video src="./demo/NetworkIssue.mov" width="50%" controls>
-</video>
+### Network glitches handling
+<img src="./demo/NetworkIssue.gif" width="50%"></img>
 
-#### SignIn/Out flow
-<video src="./demo/SignInOutFlow.mov" width="50%" controls>
-</video>
+### SignIn/Out flow
+<img src="./demo/SignInOutFlow.gif" width="50%"></img>
 
-### Development
+## Development
 
 1. **Prerequisite**
    - Make sure the following are installed
