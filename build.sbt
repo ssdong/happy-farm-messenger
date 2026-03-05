@@ -1,7 +1,7 @@
 import scala.sys.process.Process
 import sbtcrossproject.CrossPlugin.autoImport.{ crossProject, CrossType }
 
-ThisBuild / version := "0.3.0-SNAPSHOT"
+ThisBuild / version := "0.5.0-SNAPSHOT"
 
 ThisBuild / scalaVersion := "3.7.2"
 

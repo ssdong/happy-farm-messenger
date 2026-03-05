@@ -110,4 +110,8 @@ A messaging platform is a natural fit for the actor model, where deterministic m
      ```shell
      docker run -p 8080:8080 -e PGHOST="host.docker.internal" happy-farm-messenger:<version> # version from build.sbt
      ```
-     - I have my Postgres running directly on my machine so I need the application to talk to it from inside a container.
+     - I have my Postgres running directly on my machine, so I need the application to talk to it from inside a container.
+
+## Architecture
+
+![Architecture Diagram](./docs/architecture.svg)

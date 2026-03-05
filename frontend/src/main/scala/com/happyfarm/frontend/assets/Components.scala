@@ -184,7 +184,6 @@ object Html:
     val loading    = "Loading"
     val loginAgain = "We're having trouble recognizing your saved session. Please sign in again to continue."
     val failedToConnectToServer = "Failed to connect to server. Please try login again"
-    val websocketLostConnection = "Something unknown happened. Try logging again."
 
   object RegistrationPage:
     val registration = "Register HappyFarm account"

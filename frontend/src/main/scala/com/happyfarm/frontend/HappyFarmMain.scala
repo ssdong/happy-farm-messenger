@@ -82,9 +82,10 @@ object AppRoot:
     if chatWSVar.now().isEmpty then
       // Using the current window's host to be safe
       val host = org.scalajs.dom.window.location.host
-      val isSecure = org.scalajs.dom.window.location.protocol.startsWith("https") // Easier way for both local and prod
+      val isSecure =
+        org.scalajs.dom.window.location.protocol.startsWith("https") // Easier way for both local and prod
       val protocol = if isSecure then "wss" else "ws"
-      val url = s"$protocol://$host/chat?token=$token"
+      val url      = s"$protocol://$host/chat?token=$token"
       val websocket = WebSocket
         .url(url)
         .receiveText((data: String) => Right(read[ChatResponse](data)))
@@ -114,17 +115,27 @@ object AppRoot:
           wsContainer
             .amend(
               ws.connected --> { _ =>
-                routeVar.set(ChatRoomsOverview())
+                val current = routeVar.now()
+                current match
+                  case Loading | Login(_) => routeVar.set(ChatRoomsOverview())
+                  case _               =>
               },
               ws.closed --> { _ =>
-                // Laminext Websocket will keep retrying connecting to server if connection dropped.
-                // This is a "glitches" protection, but it has a caveat of "Server Down" loop. If the
-                // server was down, it doesn't differentiate between a wobbly network and an unavailable
-                // server and will keep retrying til the max attempt is exhausted.
+                // Since we manage websocket connection manually, if we detect a closed signal, try
+                // refreshing the connection automatically before signing user out.
+                val token          = webStorageAccessTokenVar.now()
+                val isManualLogout = token.isEmpty
 
-                val isManualLogout = webStorageAccessTokenVar.now().isEmpty
-                if !isManualLogout then routeVar.set(Login(Some(Html.Main.websocketLostConnection)))
-                else ()
+                if !isManualLogout then
+                  Api
+                    .verifyTokenApi(token)
+                    .foreach {
+                      case Success(response) if response.valid =>
+                        ws.reconnectNow()
+                      case _ =>
+                        // Token is now dead. Try login again
+                        logout(Some(Html.Main.loginAgain))
+                    }(using unsafeWindowOwner)
               }
             )
         case None => ()
