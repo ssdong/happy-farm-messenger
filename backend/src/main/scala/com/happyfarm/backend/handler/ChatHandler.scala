@@ -54,7 +54,6 @@ class ChatHandler(
     actorCache: ChatActorCache,
     userPresenceManager: UserPresence
 ):
-  var int = 0
   private def handleUserTyping(
       roomId: RoomId,
       userId: UserId
@@ -80,38 +79,31 @@ class ChatHandler(
       text: String,
       tempId: String
   ): ZIO[Any, Nothing, MessagePersisted] =
-    Thread.sleep(2000)
-    if int < 3 then
-      int += 1
-      ZIO.succeed(
-        MessagePersisted(maybeMessage = None, tempId = tempId)
-      )
-    else
-      (for
-        actor   <- actorCache.cache.get(roomId)
-        promise <- Promise.make[Nothing, MessagePersistenceResponse]
-        messageBuffered <- actor.mailbox
-          .offer(PostMessage(text, roomId, userId, mid, ReplyTo(promise)))
+    (for
+      actor   <- actorCache.cache.get(roomId)
+      promise <- Promise.make[Nothing, MessagePersistenceResponse]
+      messageBuffered <- actor.mailbox
+        .offer(PostMessage(text, roomId, userId, mid, ReplyTo(promise)))
 
-        _ <- ZIO.fail(UnableToBufferMessage).unless(messageBuffered)
+      _ <- ZIO.fail(UnableToBufferMessage).unless(messageBuffered)
 
-        result <- promise.await
-      yield MessagePersisted(
-        maybeMessage = result.maybeMessage,
-        tempId = tempId
-      ))
-        .catchAll {
-          case UnableToBufferMessage | _: ChatActorCreationError =>
-            ZIO.logWarning(s"Failed to buffer message $mid") *>
-              ZIO.succeed(
-                MessagePersisted(maybeMessage = None, tempId = tempId)
-              )
-          case e =>
-            ZIO.logWarning(s"Unable to persist message due to $e") *>
-              ZIO.succeed(
-                MessagePersisted(maybeMessage = None, tempId = tempId)
-              )
-        }
+      result <- promise.await
+    yield MessagePersisted(
+      maybeMessage = result.maybeMessage,
+      tempId = tempId
+    ))
+      .catchAll {
+        case UnableToBufferMessage | _: ChatActorCreationError =>
+          ZIO.logWarning(s"Failed to buffer message $mid") *>
+            ZIO.succeed(
+              MessagePersisted(maybeMessage = None, tempId = tempId)
+            )
+        case e =>
+          ZIO.logWarning(s"Unable to persist message due to $e") *>
+            ZIO.succeed(
+              MessagePersisted(maybeMessage = None, tempId = tempId)
+            )
+      }
 
   private def chatRoomsSocket(authenticatedUserId: UserId) =
     Handler.webSocket { channel =>

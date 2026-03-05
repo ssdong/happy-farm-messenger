@@ -103,3 +103,11 @@ A messaging platform is a natural fit for the actor model, where deterministic m
 5. Access the Application
    - Open your browser and go to `localhost:8000`
    - Register user with the token generated earlier
+
+6. Run it via Docker
+   - Build via `sbt releaseDocker`
+   - Run the application directly
+     ```shell
+     docker run -p 8080:8080 -e PGHOST="host.docker.internal" happy-farm-messenger:<version> # version from build.sbt
+     ```
+     - I have my Postgres running directly on my machine so I need the application to talk to it from inside a container.

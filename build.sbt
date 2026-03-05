@@ -34,9 +34,17 @@ lazy val frontend = project
 
 lazy val backend = project
   .in(file("backend"))
+  .enablePlugins(JavaAppPackaging, DockerPlugin)
   .settings(
     name         := "happy-farm-backend",
     scalaVersion := "3.7.2",
+    Compile / mainClass := Some("com.happyfarm.backend.HappyFarmMain"),
+    executableScriptName := "happy-farm-messenger",
+    Docker / packageName := "happy-farm-messenger",
+
+    dockerEntrypoint := Seq(s"/opt/docker/bin/${executableScriptName.value}"),
+    dockerBaseImage := "eclipse-temurin:21-jre-jammy", // https://hub.docker.com/layers/library/eclipse-temurin/21-jre-jammy
+    dockerExposedPorts := Seq(8080),
     libraryDependencies ++= Seq(
       "dev.zio"                    %% "zio-http"                  % "3.4.0",
       "dev.zio"                    %% "zio-cache"                 % "0.2.7",
@@ -90,3 +98,7 @@ tailwindBuild := {
 
 addCommandAlias("dev", ";fastLinkCompileCopy; tailwindBuild; backend/copyResources; backend/compile")
 addCommandAlias("prod", ";fullLinkCompileCopy; tailwindBuild; backend/copyResources; backend/compile")
+addCommandAlias(
+  "releaseDocker",
+  ";fullLinkCompileCopy; tailwindBuild; backend/copyResources; backend/Docker/publishLocal"
+)
