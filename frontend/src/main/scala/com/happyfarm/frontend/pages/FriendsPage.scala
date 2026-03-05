@@ -83,6 +83,9 @@ class FriendsPage(chatWS: WebSocket[ChatResponse, ChatRequest]) extends Page:
   override def run: ReactiveHtmlElement[HTMLDivElement] =
     div(
       cls := Css.containerView,
+      chatWS.errors --> { error =>
+        chatWS.reconnectNow()
+      },
       onMountCallback { _ => chatWS.sendOne(FetchFriends()) },
       chatWS.received --> {
         case FriendList(friends) =>

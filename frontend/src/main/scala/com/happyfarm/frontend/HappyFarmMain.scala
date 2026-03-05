@@ -82,8 +82,11 @@ object AppRoot:
     if chatWSVar.now().isEmpty then
       // Using the current window's host to be safe
       val host = org.scalajs.dom.window.location.host
+      val isSecure = org.scalajs.dom.window.location.protocol.startsWith("https") // Easier way for both local and prod
+      val protocol = if isSecure then "wss" else "ws"
+      val url = s"$protocol://$host/chat?token=$token"
       val websocket = WebSocket
-        .url(s"ws://$host/chat?token=$token")
+        .url(url)
         .receiveText((data: String) => Right(read[ChatResponse](data)))
         .sendText((request: ChatRequest) => write(request))
         // We want to manually manage websocket lifecycle so we can disconnect when user logs out. Otherwise,

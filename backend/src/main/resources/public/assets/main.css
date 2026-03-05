@@ -334,8 +334,8 @@
   .h-20 {
     height: calc(var(--spacing) * 20);
   }
-  .h-\[750px\] {
-    height: 750px;
+  .h-\[650px\] {
+    height: 650px;
   }
   .h-auto {
     height: auto;

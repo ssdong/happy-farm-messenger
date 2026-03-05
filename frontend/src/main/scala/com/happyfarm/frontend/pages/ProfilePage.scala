@@ -86,6 +86,9 @@ class ProfilePage(chatWS: WebSocket[ChatResponse, ChatRequest], useCase: Profile
   override def run: ReactiveHtmlElement[HTMLDivElement] =
     div(
       cls := Css.containerView,
+      chatWS.errors --> { error =>
+        chatWS.reconnectNow()
+      },
       onMountCallback { _ =>
         useCase match
           case ProfileUseCase.Self(None)         => chatWS.sendOne(FetchSelfInfo())

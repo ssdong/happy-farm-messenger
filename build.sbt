@@ -1,7 +1,7 @@
 import scala.sys.process.Process
 import sbtcrossproject.CrossPlugin.autoImport.{ crossProject, CrossType }
 
-ThisBuild / version := "0.1.0-SNAPSHOT"
+ThisBuild / version := "0.3.0-SNAPSHOT"
 
 ThisBuild / scalaVersion := "3.7.2"
 
@@ -32,28 +32,55 @@ lazy val frontend = project
   )
   .dependsOn(shared.js)
 
+lazy val commonBackendSettings = Seq(
+  scalaVersion         := "3.7.2",
+  Compile / mainClass  := Some("com.happyfarm.backend.HappyFarmMain"),
+  executableScriptName := "happy-farm-messenger",
+  Docker / packageName := "happy-farm-messenger",
+  dockerEntrypoint     := Seq(s"/opt/docker/bin/${executableScriptName.value}"),
+  dockerBaseImage := "eclipse-temurin:21-jre-jammy", // https://hub.docker.com/layers/library/eclipse-temurin/21-jre-jammy
+  dockerExposedPorts := Seq(8080),
+  libraryDependencies ++= Seq(
+    "dev.zio"                    %% "zio-http"                  % "3.4.0",
+    "dev.zio"                    %% "zio-cache"                 % "0.2.7",
+    "com.typesafe.scala-logging" %% "scala-logging"             % "3.9.5",
+    "com.typesafe"                % "config"                    % "1.4.4",
+    "com.github.pureconfig"      %% "pureconfig-generic-scala3" % "0.17.9",
+    "com.zaxxer"                  % "HikariCP"                  % "7.0.2",
+    "org.postgresql"              % "postgresql"                % "42.7.7"
+  )
+)
+
 lazy val backend = project
   .in(file("backend"))
   .enablePlugins(JavaAppPackaging, DockerPlugin)
   .settings(
-    name         := "happy-farm-backend",
-    scalaVersion := "3.7.2",
-    Compile / mainClass := Some("com.happyfarm.backend.HappyFarmMain"),
-    executableScriptName := "happy-farm-messenger",
-    Docker / packageName := "happy-farm-messenger",
+    commonBackendSettings,
+    name := "happy-farm-backend-local"
+  )
+  .dependsOn(shared.jvm)
 
-    dockerEntrypoint := Seq(s"/opt/docker/bin/${executableScriptName.value}"),
-    dockerBaseImage := "eclipse-temurin:21-jre-jammy", // https://hub.docker.com/layers/library/eclipse-temurin/21-jre-jammy
-    dockerExposedPorts := Seq(8080),
-    libraryDependencies ++= Seq(
-      "dev.zio"                    %% "zio-http"                  % "3.4.0",
-      "dev.zio"                    %% "zio-cache"                 % "0.2.7",
-      "com.typesafe.scala-logging" %% "scala-logging"             % "3.9.5",
-      "com.typesafe"                % "config"                    % "1.4.4",
-      "com.github.pureconfig"      %% "pureconfig-generic-scala3" % "0.17.9",
-      "com.zaxxer"                  % "HikariCP"                  % "7.0.2",
-      "org.postgresql"              % "postgresql"                % "42.7.7"
-    )
+lazy val backendRailway = project
+  .in(file("backend"))
+  .enablePlugins(JavaAppPackaging, DockerPlugin)
+  .settings(
+    commonBackendSettings,
+    name := "happy-farm-backend-railway",
+    target := baseDirectory.value / "target-railway",
+    Docker / dockerBuildCommand := {
+      val platform = "linux/amd64"
+      Seq(
+        "docker",
+        "buildx",
+        "build",
+        "--platform",
+        platform,
+        "--load",
+        "-t",
+        s"${(Docker / packageName).value}:${version.value}",
+        "."
+      )
+    }
   )
   .dependsOn(shared.jvm)
 
@@ -99,6 +126,11 @@ tailwindBuild := {
 addCommandAlias("dev", ";fastLinkCompileCopy; tailwindBuild; backend/copyResources; backend/compile")
 addCommandAlias("prod", ";fullLinkCompileCopy; tailwindBuild; backend/copyResources; backend/compile")
 addCommandAlias(
-  "releaseDocker",
+  "releaseDockerLocal",
   ";fullLinkCompileCopy; tailwindBuild; backend/copyResources; backend/Docker/publishLocal"
+)
+
+addCommandAlias(
+  "releaseDockerRailway",
+  ";fullLinkCompileCopy; tailwindBuild; backendRailway/copyResources; backendRailway/Docker/publishLocal"
 )

@@ -13,7 +13,6 @@ import com.happyfarm.frontend.pages.ChatRoomsOverviewPage.State.{
 }
 import com.happyfarm.frontend.pages.Page.Ignore
 import com.happyfarm.frontend.pages.ProfilePage.ProfileUseCase
-import com.happyfarm.frontend.pages.ProfilePage.ProfileUseCase.Self
 import com.happyfarm.frontend.utils.Utils.fetchDateAndTime
 import com.raquo.laminar.api.L.*
 import com.raquo.laminar.nodes.ReactiveHtmlElement
@@ -121,8 +120,7 @@ class ChatRoomsOverviewPage(
       cls := Css.containerView,
       onMountCallback { _ => chatWS.sendOne(FetchRooms()) },
       chatWS.errors --> { error =>
-        // Websocket corrupted, force signing out
-        logout(Some("Session interrupted. Please login again"))
+        chatWS.reconnectNow()
       },
 
       // Update state when data is ready
@@ -143,17 +141,22 @@ class ChatRoomsOverviewPage(
           case BroadCastMessage(message) =>
             loadingVar.update {
               case ChatRoomsLoaded(rooms) =>
-                val updatedUiMessages = rooms.map { room =>
-                  if room.id == message.roomId then
-                    UIChatRoomOverview(
-                      id = room.id,
-                      title = room.title,
-                      lastReadSeq = room.lastReadSeq,
-                      maybeLatestMessage = Some(message)
-                    )
-                  else room
-                }
-                ChatRoomsLoaded(updatedUiMessages)
+                val roomExists = rooms.exists(_.id == message.roomId)
+
+                if roomExists then
+                  val updatedRooms = rooms.map { room =>
+                    if room.id == message.roomId then room.copy(maybeLatestMessage = Some(message))
+                    else room
+                  }
+                  ChatRoomsLoaded(updatedRooms)
+                else
+                  val newRoom = UIChatRoomOverview(
+                    id = message.roomId,
+                    title = message.userName.getOrElse("New Chat"),
+                    lastReadSeq = 0,
+                    maybeLatestMessage = Some(message)
+                  )
+                  ChatRoomsLoaded(rooms :+ newRoom)
 
               case other => other
             }

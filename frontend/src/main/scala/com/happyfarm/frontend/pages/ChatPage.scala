@@ -446,8 +446,7 @@ class ChatPage(
           case _ => Ignore
       },
       chatWS.errors --> { error =>
-        // Websocket corrupted, force signing out
-        logout(Some("Session interrupted. Please login again"))
+        chatWS.reconnectNow()
       },
       div(
         cls := Css.header,

@@ -30,7 +30,7 @@ object Css:
     """
 
   val containerView =
-    "mx-auto my-4 w-full max-w-[500px] h-[750px] flex flex-col border border-gray-198 rounded-2xl bg-white shadow-2xl overflow-hidden"
+    "mx-auto my-4 w-full max-w-[500px] h-[650px] flex flex-col border border-gray-198 rounded-2xl bg-white shadow-2xl overflow-hidden"
   val header =
     "h-20 flex flex-col items-center justify-center border-b bg-white flex-shrink-0 relative"
   val title = "text-lg font-bold text-gray-800 truncate max-w-[60%]"
@@ -192,12 +192,12 @@ object Html:
     val password = "Password"
     val token = "Registration Token"
     val navigateToSignIn = "Go to sign in"
-    
+
   object LoginPage:
     val name = "Name"
     val password = "Password"
     val navigateToRegister = "Register"
-    
+
   object ChatRoomsOverviewPage:
     val loading      = "Loading Chats"
     val profileAlt   = "Profile"
