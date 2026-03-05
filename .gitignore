@@ -3,7 +3,9 @@ target/
 !**/src/main/**/target/
 !**/src/test/**/target/
 backend/target-railway
-
+backend/src/main/resources/public/assets/main.css
+backend/src/main/resources/public/assets/main.js
+backend/src/main/resources/public/assets/main.js.map
 ### IntelliJ IDEA ###
 .idea/
 *.iws
