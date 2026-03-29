@@ -12,6 +12,7 @@ import com.happyfarm.backend.actor.{
 import com.happyfarm.backend.persistence.HappyFarmRepository
 import com.happyfarm.backend.persistence.HappyFarmRepository.PersistenceError.UnableToBufferMessage
 import com.happyfarm.backend.subscriber.UserPresence
+import shared.model.HistoryMessageMode.{ append, replace }
 import shared.{
   AcceptFriend,
   AddFriend,
@@ -20,16 +21,17 @@ import shared.{
   CatchUpLastReadSeq,
   ChatRequest,
   ChatResponse,
-  ReceiveChatStarted,
   FetchFriends,
   FetchMessages,
   FetchRooms,
   FetchSelfInfo,
+  FetchUnreadMessages,
   FetchUserInfo,
   FriendList,
   HistoryMessages,
   MessageId,
   MessagePersisted,
+  ReceiveChatStarted,
   ReceiveError,
   ReceiveSelfInfo,
   ReceiveUserInfo,
@@ -167,7 +169,12 @@ class ChatHandler(
                   case FetchMessages(roomId, offset, size) =>
                     repo
                       .fetchHistoryMessages(roomId, authenticatedUserId, offset, size)
-                      .map(messages => Some(HistoryMessages(messages.toVector)))
+                      .map(messages => Some(HistoryMessages(messages.toVector, mode = append)))
+
+                  case FetchUnreadMessages(roomId) =>
+                    repo
+                      .fetchUnreadMessages(roomId, authenticatedUserId)
+                      .map(messages => Some(HistoryMessages(messages.toVector, mode = replace)))
 
                   case AddFriend(friendName) =>
                     for
@@ -199,6 +206,7 @@ class ChatHandler(
                     yield None
 
                   case SendTextMessage(roomId, text, tempId) =>
+                    // TODO: NEED TO FIX THIS
                     handleSendMessage(roomId, authenticatedUserId, MessageId(UUID.randomUUID()), text, tempId)
                       .map(persistedSignal => Some(persistedSignal))
 

@@ -13,6 +13,7 @@ case class FetchUserInfo(name: String)                             extends ChatR
 case class FetchFriends()                                          extends ChatRequest derives ReadWriter
 case class FetchRooms()                                            extends ChatRequest derives ReadWriter
 case class FetchMessages(roomId: RoomId, offset: Long, size: Long) extends ChatRequest derives ReadWriter
+case class FetchUnreadMessages(roomId: RoomId)                     extends ChatRequest derives ReadWriter
 case class SendTextMessage(roomId: RoomId, text: String, tempId: String) extends ChatRequest
     derives ReadWriter
 case class UserIsTyping(roomId: RoomId)       extends ChatRequest derives ReadWriter

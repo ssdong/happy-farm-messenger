@@ -1,21 +1,22 @@
 package shared
 
 import upickle.ReadWriter
-import shared.model.{ ChatRoomOverview, Friendship, Message, UserInfo }
+import shared.model.{ ChatRoomOverview, Friendship, HistoryMessageMode, Message, UserInfo }
 import zio.schema.{ DeriveSchema, Schema }
 
 sealed trait ChatResponse derives ReadWriter
 
 case class RoomList(chatRooms: Vector[ChatRoomOverview]) extends ChatResponse derives ReadWriter
 case class FriendList(friends: Vector[Friendship])       extends ChatResponse derives ReadWriter
-case class HistoryMessages(messages: Vector[Message])    extends ChatResponse derives ReadWriter
+case class HistoryMessages(messages: Vector[Message], mode: HistoryMessageMode) extends ChatResponse
+    derives ReadWriter
 case class MessagePersisted(maybeMessage: Option[Message], tempId: String) extends ChatResponse
     derives ReadWriter
 
 // Broadcast-related events
-case class BroadCastMessage(message: Message)      extends ChatResponse derives ReadWriter
-case class BroadcastAddFriendRequest(from: UserInfo) extends ChatResponse derives ReadWriter
-case class BroadcastFriendAccepted(newFriend: UserInfo)   extends ChatResponse derives ReadWriter
+case class BroadCastMessage(message: Message)           extends ChatResponse derives ReadWriter
+case class BroadcastAddFriendRequest(from: UserInfo)    extends ChatResponse derives ReadWriter
+case class BroadcastFriendAccepted(newFriend: UserInfo) extends ChatResponse derives ReadWriter
 
 case class ReceiveSelfInfo(userInfo: UserInfo)                     extends ChatResponse derives ReadWriter
 case class ReceiveUserInfo(maybeUserInfo: Option[UserInfo])        extends ChatResponse derives ReadWriter

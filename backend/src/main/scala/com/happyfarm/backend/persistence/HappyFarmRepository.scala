@@ -27,6 +27,7 @@ trait HappyFarmRepository:
       offset: Long,
       size: Long
   ): ChatIO[Seq[Message]]
+  def fetchUnreadMessages(roomId: RoomId, currentUserId: UserId): ChatIO[Seq[Message]]
   def fetchLatestMessageSeq(roomId: RoomId): ChatIO[Option[Long]]
   def addFriend(userId: UserId, friendName: String): ChatIO[UserId]
   def acceptFriend(userId: UserId, friendName: String): ChatIO[UserId]

@@ -13,8 +13,9 @@ import com.happyfarm.frontend.assets.{ Css, Html, HtmlGadgets }
 import com.raquo.laminar.api.L.*
 import com.raquo.laminar.nodes.ReactiveHtmlElement
 import io.laminext.websocket.WebSocket
+import org.scalajs.dom
 import org.scalajs.dom.HTMLDivElement
-import shared.model.Message
+import shared.model.{ HistoryMessageMode, Message }
 import shared.*
 
 import java.util.UUID
@@ -27,7 +28,7 @@ class ChatPage(
     maybeLatestMessage: Option[Message],
     maybeDraftMessage: Option[String]
 ) extends Page:
-  private val loadingVar: Var[State] = Var[State](MessagesLoading)
+  private val stateVar: Var[State] = Var[State](MessagesLoading)
 
   private val errorVar: Var[String] = Var[String]("")
 
@@ -36,6 +37,12 @@ class ChatPage(
   private val isFetchingMoreHistoricalMessagesVar: Var[Boolean] = Var(false)
 
   private val unreadCountVar = Var(0)
+
+  // We need an additional var for controlling the display of new messages existence button
+  // since we do not wish to render it when user navigate to the chat page firs time and there
+  // are nitial unread messages. If there are initial unread messages, it will be handled by
+  // rendering the 'New Message' separator bar
+  private val showUnreadMessagesNotificationBubbleVar = Var(false)
 
   private val isPeerTypingVar = Var(false)
 
@@ -63,16 +70,29 @@ class ChatPage(
     // Trigger with 30px from top to be a bit more sensitive
     el.scrollTop <= threshold
 
+  private def annotateFirstUnreadMessageSeparator(messages: Seq[Message]): Seq[UIMessage] =
+    messages.zipWithIndex.map { case (message, index) =>
+      val maybePreviousMessage = if index > 0 then Some(messages(index - 1)) else None
+
+      val uiMessage = message.toUIMessage
+
+      val isFirstUnreadMessage = maybePreviousMessage match
+        case Some(previousMessage) => message.unreadMarker && !previousMessage.unreadMarker
+        case None                  => message.unreadMarker
+
+      uiMessage.copy(isFirstUnreadMessage = isFirstUnreadMessage)
+    }
+
   // We're injecting 'date' text, e.g. 2026-05-01, before the first message in the UI if
   // a group of messages belongs to the same day
   private def injectDateSeparators(messages: Seq[UIMessage]): Seq[UIMessage] =
     messages.zipWithIndex.map { case (message, index) =>
-      val previousMessage = if index > 0 then Some(messages(index - 1)) else None
+      val maybePreviousMessage = if index > 0 then Some(messages(index - 1)) else None
 
       // Only attempt to calculate a date string if the message has a timestamp
       val dateStr = message.maybeCreatedAt.flatMap(_ => fetchDateAndTime(message).map(_._1))
 
-      val prevDateStr = previousMessage.flatMap { pm =>
+      val prevDateStr = maybePreviousMessage.flatMap { pm =>
         pm.maybeCreatedAt.flatMap(_ => fetchDateAndTime(pm).map(_._1))
       }
 
@@ -81,7 +101,7 @@ class ChatPage(
       // 2. AND (It's the first message OR the date is different from the previous one)
 
       // This prevents we render date separator for "typing" dummy UI message and pending messages
-      val shouldShowSeparator = dateStr.isDefined && (previousMessage.isEmpty || prevDateStr != dateStr)
+      val shouldShowSeparator = dateStr.isDefined && (maybePreviousMessage.isEmpty || prevDateStr != dateStr)
 
       if shouldShowSeparator then message.copy(maybeDateSeparator = dateStr)
       else message
@@ -152,7 +172,7 @@ class ChatPage(
       onScroll --> { ev =>
         val el = ev.target.asInstanceOf[org.scalajs.dom.html.Div]
         if isNearTop(el) && !isFetchingMoreHistoricalMessagesVar.now() then
-          loadingVar.now() match
+          stateVar.now() match
             case MessagesLoaded(messages, _) =>
               messages.headOption.foreach { oldestMsg =>
                 // Only fetch if we aren't at the very beginning (seq > 1)
@@ -165,17 +185,11 @@ class ChatPage(
             case _ => Ignore
 
         if isNearBottom(el) && unreadCountVar.now() > 0 then
-          // Use the auto-scroll to clear the unread count var and to reuse
-          // the sending "CatchUpLastReadSeq". Otherwise, we'll have to call
-          // sending "CatchUpLastReadSeq" here again because we have removed
-          // sending "CatchUpLastReadSeq" whenever we receive a "BroadCastMessage".
-
-          // The catching-up is taken care of whenever user scrolls to the bottom,
-          // either voluntarily or by clicking "unread" button. It'll be a good
-          // spot to claim user has caught up reading the latest message.
-          forceScrollBus.writer.onNext(())
+          unreadCountVar.set(0)
+          showUnreadMessagesNotificationBubbleVar.set(false)
+          chatWS.sendOne(CatchUpLastReadSeq(RoomId(roomId)))
       },
-      child <-- loadingVar.signal.map {
+      child <-- stateVar.signal.map {
         case MessagesLoading => waitingForLoadingMessages
         case PageError       => pageErrorView
         case _               => emptyNode
@@ -183,13 +197,13 @@ class ChatPage(
       child.maybe <-- isFetchingMoreHistoricalMessagesVar.signal.map { fetching =>
         if fetching then Some(HtmlGadgets.loadingDots) else None
       },
-      children <-- loadingVar.signal
+      children <-- stateVar.signal
         .combineWith(isPeerTypingVar)
         .map {
           case (PageError, _)       => Seq.empty
           case (MessagesLoading, _) => Seq.empty
           case (MessagesLoaded(messages, pending), isPeerTyping) =>
-            val serverMessages = messages.map(_.toUIMessage)
+            val serverMessages = annotateFirstUnreadMessageSeparator(messages)
             // "Dummy" UI Message for rendering typing floating dots
             val maybeTypingUI =
               if isPeerTyping then
@@ -213,6 +227,20 @@ class ChatPage(
           // Laminar split allows re-rendering if existing item values change or just renders
           // new items without replacing the whole list
           div(
+            // Render the unread message bar if it's the first unread message
+            child.maybe <-- messageSignal.map { (_, message) =>
+              Option.when(message.isFirstUnreadMessage) {
+                div(
+                  cls := Css.ChatPage.messageListUnreadSeparatorPosition,
+                  div(cls := Css.ChatPage.messageListUnreadSeparatorLine),
+                  span(
+                    cls := Css.ChatPage.messageListUnreadSeparatorText,
+                    "New Messages"
+                  ),
+                  div(cls := Css.ChatPage.messageListUnreadSeparatorLine)
+                )
+              }
+            },
             // Render the date separator if it exists
             child.maybe <-- messageSignal.map(_._2.maybeDateSeparator.map { date =>
               div(
@@ -227,16 +255,28 @@ class ChatPage(
 
       // This will be triggered ONLY once to focus on the newest message when user navigates to the chat page
       inContext { thisNode =>
-        loadingVar.signal.changes --> {
+        stateVar.signal.changes --> {
           case MessagesLoaded(_, _) if !haveWeFetchedTheInitialBatchOfMessages =>
             // Use a small delay to let Laminar finish the DOM injection for the
             // initial batch of messages
             scala.scalajs.js.timers.setTimeout(0) {
               haveWeFetchedTheInitialBatchOfMessages = true
 
-              // TODO: Needs to scroll to last unseen messages or to the bottom
-              //       if all messages have been seen or put a marker at the place where it's lsat seen
-              thisNode.ref.scrollTop = thisNode.ref.scrollHeight
+              val container = thisNode.ref
+
+              val newMessageSeparatorOpt = Option(
+                container.getElementsByClassName(Css.ChatPage.messageListUnreadSeparatorPosition).item(0)
+              )
+
+              newMessageSeparatorOpt match
+                case Some(el) =>
+                  el.asInstanceOf[dom.html.Element].scrollIntoView()
+
+                  scala.scalajs.js.timers.setTimeout(0) {
+                    container.scrollTop = container.scrollTop - 10
+                  }
+                case None =>
+                  container.scrollTop = container.scrollHeight
             }
           case _ => ()
         }
@@ -253,6 +293,7 @@ class ChatPage(
 
             if unreadCountVar.now() > 0 then
               unreadCountVar.set(0)
+              showUnreadMessagesNotificationBubbleVar.set(false)
 
               // If user is at the top of screenshot navigating historical messages while new messages
               // comes, and if they don't click on the "X unread messages" button to navigate to the
@@ -272,7 +313,7 @@ class ChatPage(
     )
 
   private def resendMessage(msg: UIMessage): Unit =
-    loadingVar.update {
+    stateVar.update {
       case MessagesLoaded(existingMessages, pendingMessages) =>
         val updatedPending = pendingMessages.map { pendingMessage =>
           if pendingMessage.tempId == msg.id then pendingMessage.copy(failed = false)
@@ -335,26 +376,26 @@ class ChatPage(
       // Fetch initial batch of messages
       onMountCallback { _ =>
         maybeLatestMessage match
-          case Some(latestMessage) =>
+          case Some(_) =>
             chatWS.sendOne(
-              FetchMessages(
-                roomId = RoomId(roomId),
-                offset = latestMessage.seq,
-                size = fetchHistoricalMessagesBatchSize
-              )
-            )
-
-            // Shouldn't be a big deal if we claim catching up latest messages even though the fetching
-            // hasn't come back yet.
-            chatWS.sendOne(
-              CatchUpLastReadSeq(
-                roomId = RoomId(roomId)
-              )
+              FetchUnreadMessages(RoomId(roomId))
             )
 
           case None =>
             // No historical messages need to be loaded
-            loadingVar.set(MessagesLoaded(Seq.empty, Seq.empty))
+            stateVar.set(MessagesLoaded(Seq.empty, Seq.empty))
+
+        // On mobile, the browser often suspends JavaScript execution when the app is in the background.
+        // Sometimes the socket stays "technically" open in the OS buffer but is actually dead.
+        // When the user returns, the 'connected' event might not fire immediately because the socket
+        // didn't "close" yet, it just timed out.
+
+        // Use 'Page Visibility API' to detect user coming back
+        dom.window.document.addEventListener(
+          "visibilitychange",
+          (_: dom.Event) => if dom.window.document.visibilityState == "visible" then chatWS.reconnectNow()
+        )
+
       },
 
       // Trigger scroll whenever peer starts typing
@@ -364,27 +405,40 @@ class ChatPage(
       // receive a new message from BroadCast, except for this time it's a
       // synthetic dummy UI message injected and rendered from user typing signal.
       isPeerTypingVar.signal.changes.filter(identity) --> { _ =>
-        // Use a slightly longer delay (10-50ms) to ensure Laminar has
-        // finished the DOM injection of UI message.
-        scala.scalajs.js.timers.setTimeout(50) {
-          forceScrollBus.writer.onNext(())
+        messagesContainerEl.foreach { el =>
+          // Only scroll if the user is already near the bottom
+          if isNearBottom(el) then
+            // Use a slightly longer delay (10-50ms) to ensure Laminar has
+            // finished the DOM injection of UI message.
+            scala.scalajs.js.timers.setTimeout(50) {
+              forceScrollBus.writer.onNext(())
+            }
         }
       },
 
       // Update state when data comes
       chatWS.received --> { response =>
         response match
-          case HistoryMessages(newMessages) =>
-            loadingVar.update {
-              case MessagesLoading => MessagesLoaded(newMessages, Seq.empty)
-              case MessagesLoaded(existingMessages, pendingMessages) =>
-                isFetchingMoreHistoricalMessagesVar.set(false)
-                MessagesLoaded(newMessages ++ existingMessages, pendingMessages)
-              case PageError => PageError
-            }
+          case HistoryMessages(newMessages, mode) =>
+            mode match
+              case HistoryMessageMode.append =>
+                stateVar.update {
+                  case MessagesLoading => MessagesLoaded(newMessages, Seq.empty)
+                  case MessagesLoaded(existingMessages, pendingMessages) =>
+                    isFetchingMoreHistoricalMessagesVar.set(false)
+                    MessagesLoaded(newMessages ++ existingMessages, pendingMessages)
+                  case PageError => PageError
+                }
+              case HistoryMessageMode.replace =>
+                val numOfUnreadMessages = newMessages.count(_.unreadMarker)
+                unreadCountVar.set(numOfUnreadMessages)
+                showUnreadMessagesNotificationBubbleVar.set(false)
+                stateVar.set(
+                  MessagesLoaded(newMessages, Seq.empty)
+                )
 
           case MessagePersisted(maybeMessage, tempId) =>
-            loadingVar.update {
+            stateVar.update {
               case MessagesLoaded(existingMessages, pendingMessages) =>
                 maybeMessage match
                   case Some(message) =>
@@ -412,7 +466,7 @@ class ChatPage(
             // ONLY add if it's in the same room and NOT from current user since messages
             // from current user has already been taken care of through pending and MessagePersisted signal
             if message.roomId == roomId && !message.isMe then
-              loadingVar.update {
+              stateVar.update {
                 case MessagesLoaded(existingMessages, pendingMessages) =>
                   val updatedMessages = (existingMessages :+ message)
                     .distinctBy(_.seq)
@@ -424,7 +478,9 @@ class ChatPage(
               messagesContainerEl match
                 case Some(el) =>
                   if isNearBottom(el) then forceScrollBus.writer.onNext(())
-                  else unreadCountVar.update(_ + 1)
+                  else
+                    unreadCountVar.update(_ + 1)
+                    showUnreadMessagesNotificationBubbleVar.set(true)
                 case None => ()
 
           case ReceiveUserTyping(fromRoomId, isMe) =>
@@ -440,12 +496,21 @@ class ChatPage(
                 if isFatal then logout(Some(reason))
                 else
                   errorVar.set(reason)
-                  loadingVar.set(PageError)
+                  stateVar.set(PageError)
               case _ => Ignore
 
           case _ => Ignore
       },
+      chatWS.connected --> { _ =>
+        // After we re-establish the connection, need to refresh the page since the
+        // information could be out of date. (This is happening in mobile browsers
+        // when users navigate between different apps, so if they come back to the
+        // chat app, the websocket connection needs to be refreshed and there can be
+        // unread messages)
+        chatWS.sendOne(FetchUnreadMessages(RoomId(roomId)))
+      },
       chatWS.errors --> { error =>
+        // In case signal drops, we need to try re-establishing the connection
         chatWS.reconnectNow()
       },
       div(
@@ -462,17 +527,19 @@ class ChatPage(
           cls := Css.title,
           roomTitle
         ),
-        child.maybe <-- unreadCountVar.signal.map { count =>
-          Option.when(count > 0)(
-            div(
-              cls := Css.ChatPage.messageListUnreadMessageNotificationStyle,
-              s"$count unread messages",
-              onClick --> { _ =>
-                forceScrollBus.writer.onNext(())
-              }
+        child.maybe <-- unreadCountVar.signal
+          .combineWith(showUnreadMessagesNotificationBubbleVar)
+          .map { (count, showUnreadMessageButton) =>
+            Option.when(count > 0 && showUnreadMessageButton)(
+              div(
+                cls := Css.ChatPage.messageListUnreadMessageNotificationStyle,
+                s"$count unread messages",
+                onClick --> { _ =>
+                  forceScrollBus.writer.onNext(())
+                }
+              )
             )
-          )
-        }
+          }
       ),
 
       // Scrollable Chat History
@@ -524,7 +591,7 @@ class ChatPage(
                 messageVar.set("")
                 ChatRoomsOverviewPage.clearDraft(RoomId(roomId))
 
-                loadingVar.update {
+                stateVar.update {
                   case MessagesLoaded(messages, pending) => MessagesLoaded(messages, pending :+ newPending)
                   case other                             => other
                 }
@@ -587,6 +654,7 @@ object ChatPage:
       maybeText: Option[String],
       maybeCreatedAt: Option[String], // yyyy-MM-ddTHH:mm:ssZ ISO-8601 compliant string
       maybeDateSeparator: Option[String] = None,
+      isFirstUnreadMessage: Boolean = false,
       isPending: Boolean = false,
       failedToSent: Boolean = false
   )

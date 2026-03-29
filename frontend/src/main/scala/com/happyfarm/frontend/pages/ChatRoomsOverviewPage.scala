@@ -2,7 +2,7 @@ package com.happyfarm.frontend.pages
 
 import com.happyfarm.frontend.*
 import com.happyfarm.frontend.Globals.{ getSelfInfo, logout, routeVar }
-import com.happyfarm.frontend.Route.{ Chat, Friends, Profile }
+import com.happyfarm.frontend.Route.{ Chat, Friends, Loading, Profile }
 import com.happyfarm.frontend.assets.HtmlGadgets.{ errorView, loadingView }
 import com.happyfarm.frontend.assets.{ Css, Html, HtmlGadgets }
 import com.happyfarm.frontend.pages.ChatRoomsOverviewPage.*
@@ -18,6 +18,7 @@ import com.raquo.laminar.api.L.*
 import com.raquo.laminar.nodes.ReactiveHtmlElement
 import io.laminext.websocket.WebSocket
 import org.scalajs.dom.HTMLDivElement
+import org.scalajs.dom
 import shared.*
 import shared.model.{ Message, MessageType }
 
@@ -26,7 +27,7 @@ import java.util.UUID
 class ChatRoomsOverviewPage(
     chatWS: WebSocket[ChatResponse, ChatRequest]
 ) extends Page:
-  private val loadingVar: Var[State] = Var[State](ChatRoomsLoading)
+  private val stateVar: Var[State] = Var[State](ChatRoomsLoading)
 
   private val errorVar: Var[String] = Var[String]("")
 
@@ -118,9 +119,23 @@ class ChatRoomsOverviewPage(
   override def run: ReactiveHtmlElement[HTMLDivElement] =
     div(
       cls := Css.containerView,
-      onMountCallback { _ => chatWS.sendOne(FetchRooms()) },
+      onMountCallback { _ =>
+        chatWS.sendOne(FetchRooms())
+
+        dom.window.document.addEventListener(
+          "visibilitychange",
+          (_: dom.Event) => if dom.window.document.visibilityState == "visible" then chatWS.reconnectNow()
+        )
+      },
       chatWS.errors --> { error =>
+        // In case signal drops, we need to try re-establishing the connection
         chatWS.reconnectNow()
+      },
+      chatWS.connected --> { _ =>
+        // After we re-establish the connection, need to refresh the page since the
+        // information could be out of date.
+        stateVar.set(ChatRoomsLoading)
+        chatWS.sendOne(FetchRooms())
       },
 
       // Update state when data is ready
@@ -137,9 +152,9 @@ class ChatRoomsOverviewPage(
                 maybeDraftMessage = drafts.get(RoomId(room.id))
               )
             }
-            loadingVar.set(State.ChatRoomsLoaded(uiMessages))
+            stateVar.set(State.ChatRoomsLoaded(uiMessages))
           case BroadCastMessage(message) =>
-            loadingVar.update {
+            stateVar.update {
               case ChatRoomsLoaded(rooms) =>
                 val roomExists = rooms.exists(_.id == message.roomId)
 
@@ -167,7 +182,7 @@ class ChatRoomsOverviewPage(
                 if isFatal then logout(Some(reason))
                 else
                   errorVar.set(reason)
-                  loadingVar.set(PageError)
+                  stateVar.set(PageError)
               case _ => Ignore
 
           case _ => Ignore
@@ -177,7 +192,7 @@ class ChatRoomsOverviewPage(
       // Chats List - Scrollable Area
       div(
         cls := Css.ChatRoomsOverviewPage.scrollableArea,
-        child <-- loadingVar.signal.map {
+        child <-- stateVar.signal.map {
           case PageError              => pageErrorView
           case ChatRoomsLoading       => waitingForLoadingChatsView // TODO: too much scrolling
           case ChatRoomsLoaded(rooms) => ChatsList(rooms)

@@ -1,7 +1,7 @@
 import scala.sys.process.Process
 import sbtcrossproject.CrossPlugin.autoImport.{ crossProject, CrossType }
 
-ThisBuild / version := "0.5.0-SNAPSHOT"
+ThisBuild / version := "0.6.0"
 
 ThisBuild / scalaVersion := "3.7.2"
 
@@ -60,15 +60,21 @@ lazy val backend = project
   )
   .dependsOn(shared.jvm)
 
+
+lazy val pushGHCR = taskKey[Unit]("Push Docker image to GHCR")
 lazy val backendRailway = project
   .in(file("backend"))
   .enablePlugins(JavaAppPackaging, DockerPlugin)
   .settings(
     commonBackendSettings,
     name := "happy-farm-backend-railway",
+    Docker / dockerRepository := Some("ghcr.io/ssdong"),
+    Docker / version := (ThisBuild / version).value,
     target := baseDirectory.value / "target-railway",
     Docker / dockerBuildCommand := {
       val platform = "linux/amd64"
+      // .value on dockerAlias automatically combines repository + name + version
+      val alias = (Docker / dockerAlias).value.toString
       Seq(
         "docker",
         "buildx",
@@ -77,9 +83,16 @@ lazy val backendRailway = project
         platform,
         "--load",
         "-t",
-        s"${(Docker / packageName).value}:${version.value}",
+        alias,
         "."
       )
+    },
+    pushGHCR := {
+      val alias = (Docker / dockerAlias).value.toString
+      val cmd = Seq("docker", "push", alias)
+      val exitCode = Process(cmd).!
+
+      if (exitCode != 0) sys.error(s"Docker push failed with exit code $exitCode")
     }
   )
   .dependsOn(shared.jvm)
@@ -134,3 +147,5 @@ addCommandAlias(
   "releaseDockerRailway",
   ";fullLinkCompileCopy; tailwindBuild; backendRailway/copyResources; backendRailway/Docker/publishLocal"
 )
+
+addCommandAlias("push", ";backendRailway/pushGHCR")

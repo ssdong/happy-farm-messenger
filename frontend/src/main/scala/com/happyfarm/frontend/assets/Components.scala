@@ -141,6 +141,10 @@ object Css:
     */
   object ChatPage:
     val scrollableHistory = "flex-grow overflow-y-auto px-4 py-4 bg-white flex flex-col no-scrollbar"
+    val messageListUnreadSeparatorPosition = "flex items-center my-6 px-4"
+    val messageListUnreadSeparatorLine     = "flex-grow border-t-2 border-emerald-100"
+    val messageListUnreadSeparatorText =
+      "mx-4 text-emerald-600 text-[10px] font-bold uppercase tracking-widest whitespace-nowrap"
     val messageListDateSeparatorPosition = "flex justify-center my-4"
     val messageListDateSeparatorStyle    = "bg-gray-100 text-gray-500 text-xs px-3 py-1 rounded-full"
     val messageListUnreadMessageNotificationStyle =
@@ -186,15 +190,15 @@ object Html:
     val failedToConnectToServer = "Failed to connect to server. Please try login again"
 
   object RegistrationPage:
-    val registration = "Register HappyFarm account"
-    val name = "Name"
-    val password = "Password"
-    val token = "Registration Token"
+    val registration     = "Register HappyFarm account"
+    val name             = "Name"
+    val password         = "Password"
+    val token            = "Registration Token"
     val navigateToSignIn = "Go to sign in"
 
   object LoginPage:
-    val name = "Name"
-    val password = "Password"
+    val name               = "Name"
+    val password           = "Password"
     val navigateToRegister = "Register"
 
   object ChatRoomsOverviewPage:

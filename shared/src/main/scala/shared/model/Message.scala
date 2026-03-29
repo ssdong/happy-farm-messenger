@@ -8,6 +8,13 @@ import java.util.UUID
 enum MessageType derives ReadWriter:
   case text, image, audio
 
+// 'replace' is useful when user loses connection in FE(e.g. mobile browser) and
+// Laminar reconnects websocket and fetches history messages all the way to user's last
+// unread message. The fetched messages need to replace the existing messages in FE
+// rather than be appended.
+enum HistoryMessageMode derives ReadWriter:
+  case append, replace
+
 case class Message(
     roomId: UUID,
     userId: String,
@@ -20,7 +27,8 @@ case class Message(
     image: Vector[Byte],
     audioType: Option[String],
     audio: Vector[Byte],
-    isMe: Boolean = false
+    isMe: Boolean = false,
+    unreadMarker: Boolean = false
 ) derives ReadWriter
 
 object Message:

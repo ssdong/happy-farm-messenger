@@ -44,6 +44,7 @@ import java.time.format.DateTimeFormatter
 import java.util.UUID
 import javax.sql.DataSource
 import scala.util.{ Try, Using }
+import scala.math.max
 
 class PostgresHappyFarmRepository private (connectionProvider: () => Connection)
     extends HappyFarmRepository
@@ -336,30 +337,6 @@ class PostgresHappyFarmRepository private (connectionProvider: () => Connection)
       .mapError(_ => FetchUsersFailure)
 
   override def fetchChatRooms(userId: UserId): ChatIO[Seq[ChatRoomOverview]] =
-    def resolvePrivateChatTitle(
-        connection: Connection,
-        roomId: UUID,
-        currentUserId: UUID
-    ): String =
-      val sql =
-        s"""
-           SELECT u.name
-           FROM happyfarm.room_members rm
-           JOIN happyfarm.users u
-           ON u.user_canonical_id = rm.user_canonical_id
-           WHERE rm.room_id = ? AND rm.user_canonical_id <> ?
-           LIMIT 1;
-           """.stripMargin
-
-      Using.resource(connection.prepareStatement(sql)) { ps =>
-        ps.setObject(1, roomId)
-        ps.setObject(2, currentUserId)
-
-        Using.resource(ps.executeQuery()) { rs =>
-          if rs.next() then rs.getString("name")
-          else "<unknown>"
-        }
-      }
     db { connection =>
       val sql =
         s"""
@@ -446,66 +423,47 @@ class PostgresHappyFarmRepository private (connectionProvider: () => Connection)
       offset: Long,
       size: Long
   ): ChatIO[Seq[Message]] =
-    db { connection =>
-      val sql =
-        """
-          SELECT * FROM (
-            SELECT
-                m.room_id,
-                m.seq,
-                m.message_type,
-                m.message_text,
-                m.created_at,
-                CAST(u.user_canonical_id AS text) AS string_user_id,
-                u.name,
-                i.content_type AS image_type,
-                i.data         AS image_data,
-                a.content_type AS audio_type,
-                a.data         AS audio_data
-            FROM happyfarm.messages m
-            LEFT JOIN happyfarm.users u ON m.user_canonical_id = u.user_canonical_id
-            LEFT JOIN happyfarm.image_blobs i ON m.image_id = i.image_id
-            LEFT JOIN happyfarm.audio_blobs a ON m.audio_id = a.audio_id
-            WHERE m.room_id = ?
-              AND m.seq <= ?
-            ORDER BY m.seq DESC -- Get the LATEST (size) messages
-            LIMIT ?
-          ) AS sub
-          ORDER BY seq ASC    -- Re-sort so the UI sees it the correct chronological order
-          """.stripMargin
+    (for messages <- db { connection =>
+        val lastReadSeq = getLastReadSeq(connection, roomId.toUUID, currentUserId.toUUID)
 
-      Using.resource(connection.prepareStatement(sql)) { ps =>
-        ps.setObject(1, roomId.toUUID)
-        ps.setLong(2, offset)
-        ps.setLong(3, size)
-
-        Using.resource(ps.executeQuery()) { rs =>
-          val buf = Vector.newBuilder[Message]
-
-          while rs.next() do
-            val userId = rs.getString("string_user_id")
-            buf += Message(
-              roomId = rs.getObject("room_id", classOf[UUID]),
-              userId = userId,
-              userName = Some(rs.getString("name")),
-              seq = rs.getLong("seq"),
-              createdAt = formatter.format(rs.getTimestamp("created_at").toInstant),
-              `type` = MessageType.valueOf(rs.getString("message_type")),
-              text = Option(rs.getString("message_text")),
-              imageType = Option(rs.getString("image_type")),
-              image = Option(rs.getBytes("image_data")).map(_.toVector).getOrElse(Vector.empty),
-              audioType = Option(rs.getString("audio_type")),
-              audio = Option(rs.getBytes("audio_data")).map(_.toVector).getOrElse(Vector.empty),
-              isMe = currentUserId.toString == userId
-            )
-
-          buf.result()
-        }
+        fetchHistoryMessagesInternal(connection, roomId, currentUserId, offset, size, lastReadSeq)
       }
-    }
-      .flatMap(ZIO.succeed)
+    yield messages)
       .tapError(e => ZIO.logError(s"Database failure: ${e.getMessage}"))
       .mapError(_ => FetchHistoryMessagesFailure)
+
+  override def fetchUnreadMessages(roomId: RoomId, currentUserId: UserId): ChatIO[Seq[Message]] =
+    (for
+      maybeLatestMessageSeq <- fetchLatestMessageSeq(roomId)
+
+      latestSeq = maybeLatestMessageSeq.getOrElse(0L)
+
+      messages <-
+        db { connection =>
+          val lastReadSeq = getLastReadSeq(connection, roomId.toUUID, currentUserId.toUUID)
+          // Potential improvement:
+
+          // Frankly, this isn't the best solution, but it's enough for a private chat app.
+          // If there are 500 unread messages, this query will try to load all 500 at once.
+          // In a very active room, this could lead to a large memory spike or a slow query
+          // on the server.
+          // It should have a cap to prevent loading thousands of messages if a user has been
+          // offline for a month.
+
+          // Fetch 10 more history messages beyond unread if applicable
+          val extraHistoryMessages = max(0L, latestSeq - lastReadSeq + 10L)
+          fetchHistoryMessagesInternal(
+            connection,
+            roomId,
+            currentUserId,
+            latestSeq,
+            extraHistoryMessages,
+            lastReadSeq
+          )
+        }
+    yield messages)
+      .tapError(e => ZIO.logError(s"Database failure: ${e.getMessage}"))
+      .mapError(_ => FetchHistoryMessagesFailure) // This is essentially still fetching "history" messages
 
   override def fetchLatestMessageSeq(roomId: RoomId): ChatIO[Option[Long]] =
     db { connection =>
@@ -822,6 +780,118 @@ class PostgresHappyFarmRepository private (connectionProvider: () => Connection)
         DuplicateMessage
       case _ =>
         MessagePersistenceFailure
+    }
+
+  private def fetchHistoryMessagesInternal(
+      connection: Connection,
+      roomId: RoomId,
+      currentUserId: UserId,
+      offset: Long,
+      size: Long,
+      lastReadSeq: Long
+  ): Seq[Message] =
+    val sql =
+      """
+        SELECT * FROM (
+          SELECT
+              m.room_id,
+              m.seq,
+              m.message_type,
+              m.message_text,
+              m.created_at,
+              CAST(u.user_canonical_id AS text) AS string_user_id,
+              u.name,
+              i.content_type AS image_type,
+              i.data         AS image_data,
+              a.content_type AS audio_type,
+              a.data         AS audio_data
+          FROM happyfarm.messages m
+          LEFT JOIN happyfarm.users u ON m.user_canonical_id = u.user_canonical_id
+          LEFT JOIN happyfarm.image_blobs i ON m.image_id = i.image_id
+          LEFT JOIN happyfarm.audio_blobs a ON m.audio_id = a.audio_id
+          WHERE m.room_id = ?
+            AND m.seq <= ?
+          ORDER BY m.seq DESC -- Get the LATEST (size) messages
+          LIMIT ?
+        ) AS sub
+        ORDER BY seq ASC    -- Re-sort so the UI sees it the correct chronological order
+      """.stripMargin
+
+    Using.resource(connection.prepareStatement(sql)) { ps =>
+      ps.setObject(1, roomId.toUUID)
+      ps.setLong(2, offset)
+      ps.setLong(3, size)
+
+      Using.resource(ps.executeQuery()) { rs =>
+        val buf = Vector.newBuilder[Message]
+
+        while rs.next() do
+          val userId = rs.getString("string_user_id")
+          buf += Message(
+            roomId = rs.getObject("room_id", classOf[UUID]),
+            userId = userId,
+            userName = Some(rs.getString("name")),
+            seq = rs.getLong("seq"),
+            createdAt = formatter.format(rs.getTimestamp("created_at").toInstant),
+            `type` = MessageType.valueOf(rs.getString("message_type")),
+            text = Option(rs.getString("message_text")),
+            imageType = Option(rs.getString("image_type")),
+            image = Option(rs.getBytes("image_data")).map(_.toVector).getOrElse(Vector.empty),
+            audioType = Option(rs.getString("audio_type")),
+            audio = Option(rs.getBytes("audio_data")).map(_.toVector).getOrElse(Vector.empty),
+            isMe = currentUserId.toString == userId,
+            unreadMarker = rs.getLong("seq") > lastReadSeq
+          )
+
+        buf.result()
+      }
+    }
+
+  private def getLastReadSeq(
+      connection: Connection,
+      roomId: UUID,
+      currentUserId: UUID
+  ): Long =
+    val sql =
+      s"""
+         SELECT rm.last_read_seq
+         FROM happyfarm.room_members rm
+         WHERE rm.room_id = ? AND rm.user_canonical_id = ?
+         """.stripMargin
+
+    Using.resource(connection.prepareStatement(sql)) { ps =>
+      ps.setObject(1, roomId)
+      ps.setObject(2, currentUserId)
+
+      Using.resource(ps.executeQuery()) { rs =>
+        if rs.next() then rs.getLong("last_read_seq")
+        else 0
+      }
+    }
+
+  private def resolvePrivateChatTitle(
+      connection: Connection,
+      roomId: UUID,
+      currentUserId: UUID
+  ): String =
+    val sql =
+      s"""
+           SELECT u.name
+           FROM happyfarm.room_members rm
+           JOIN happyfarm.users u
+           ON u.user_canonical_id = rm.user_canonical_id
+           WHERE rm.room_id = ? AND rm.user_canonical_id <> ?
+           LIMIT 1;
+           """.stripMargin
+
+    Using.resource(connection.prepareStatement(sql)) { ps =>
+      ps.setObject(1, roomId)
+      ps.setObject(2, currentUserId)
+
+      Using.resource(ps.executeQuery()) { rs =>
+        if rs.next() then rs.getString("name")
+        else "<unknown>"
+      }
     }
 
   private def generateToken(userCanonicalId: UUID): AuthIO[Token] =

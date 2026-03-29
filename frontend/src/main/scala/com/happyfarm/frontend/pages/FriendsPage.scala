@@ -1,23 +1,23 @@
 package com.happyfarm.frontend.pages
 
 import com.happyfarm.frontend.*
-import com.happyfarm.frontend.Globals.{ logout, routeVar, userNameVar }
+import com.happyfarm.frontend.Globals.{ logout, routeVar }
 import com.happyfarm.frontend.Route.{ ChatRoomsOverview, Profile }
 import com.happyfarm.frontend.assets.HtmlGadgets.{ backButton, errorView, loadingView }
 import com.happyfarm.frontend.assets.{ Css, Html, HtmlGadgets }
 import com.happyfarm.frontend.pages.FriendsPage.State.*
 import com.happyfarm.frontend.pages.ProfilePage.ProfileUseCase
-import com.happyfarm.frontend.pages.ProfilePage.ProfileUseCase.SearchFriend
 import com.raquo.laminar.api.L.*
 import com.raquo.laminar.nodes.ReactiveHtmlElement
 import io.laminext.websocket.WebSocket
+import org.scalajs.dom
 import org.scalajs.dom.HTMLDivElement
 import shared.*
-import shared.model.{ Friendship, FriendshipStatus, UserInfo }
+import shared.model.{ Friendship, FriendshipStatus }
 
 class FriendsPage(chatWS: WebSocket[ChatResponse, ChatRequest]) extends Page:
-  private val loadingVar: Var[FriendsPage.State] = Var(FriendsLoading)
-  private val errorVar: Var[String]              = Var("")
+  private val stateVar: Var[FriendsPage.State] = Var(FriendsLoading)
+  private val errorVar: Var[String]            = Var("")
 
   private val searchVar = Var("")
 
@@ -83,16 +83,26 @@ class FriendsPage(chatWS: WebSocket[ChatResponse, ChatRequest]) extends Page:
   override def run: ReactiveHtmlElement[HTMLDivElement] =
     div(
       cls := Css.containerView,
+      chatWS.connected --> { _ =>
+        stateVar.set(FriendsLoading)
+        chatWS.sendOne(FetchFriends())
+
+        dom.window.document.addEventListener(
+          "visibilitychange",
+          (_: dom.Event) => if dom.window.document.visibilityState == "visible" then chatWS.reconnectNow()
+        )
+      },
       chatWS.errors --> { error =>
+        // In case signal drops, we need to try re-establishing the connection
         chatWS.reconnectNow()
       },
       onMountCallback { _ => chatWS.sendOne(FetchFriends()) },
       chatWS.received --> {
         case FriendList(friends) =>
-          loadingVar.set(FriendsLoaded(friends))
+          stateVar.set(FriendsLoaded(friends))
 
         case BroadcastAddFriendRequest(from) =>
-          loadingVar.update {
+          stateVar.update {
             case FriendsLoaded(current) =>
               val newFriendship = Friendship(from, FriendshipStatus.pending)
               FriendsLoaded(current :+ newFriendship)
@@ -100,7 +110,7 @@ class FriendsPage(chatWS: WebSocket[ChatResponse, ChatRequest]) extends Page:
           }
 
         case BroadcastFriendAccepted(newFriend) =>
-          loadingVar.update {
+          stateVar.update {
             case FriendsLoaded(current) =>
               // Remove pending one from the list
               val updated       = current.filter(_.userInfo.userName != newFriend.userName)
@@ -113,7 +123,7 @@ class FriendsPage(chatWS: WebSocket[ChatResponse, ChatRequest]) extends Page:
           if isFatal then logout(Some(reason))
           else
             errorVar.set(reason)
-            loadingVar.set(PageError)
+            stateVar.set(PageError)
         case _ => ()
       },
       div(
@@ -138,7 +148,7 @@ class FriendsPage(chatWS: WebSocket[ChatResponse, ChatRequest]) extends Page:
               val name = searchVar.now().trim
 
               if name.nonEmpty then
-                val maybeExistingFriend = loadingVar.now() match
+                val maybeExistingFriend = stateVar.now() match
                   case FriendsLoaded(friends) => friends.find(_.userInfo.userName == name)
                   case _                      => None
 
@@ -156,7 +166,7 @@ class FriendsPage(chatWS: WebSocket[ChatResponse, ChatRequest]) extends Page:
       // Main Content
       div(
         cls := Css.FriendsPage.scrollableArea,
-        child <-- loadingVar.signal.map {
+        child <-- stateVar.signal.map {
           case FriendsLoading   => loadingView(Html.FriendsPage.loading)
           case PageError        => errorView(errorVar.now())
           case FriendsLoaded(f) => friendsList(f)

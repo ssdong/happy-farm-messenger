@@ -112,6 +112,10 @@ A messaging platform is a natural fit for the actor model, where deterministic m
      ```
      - I have my Postgres running directly on my machine, so I need the application to talk to it from inside a container.
 
+7. Publishing
+    - `sbt releaseDockerRailway` builds a `linux/amd64` Docker image for deployment. It is named after Railway because I use Railway for personal hosting, but the image can be used more generally on compatible platforms
+    - `sbt push` pushes the built image to GitHub Packages for Railway or other compatible platforms to pull and deploy
+
 ## Architecture
 
 ![Architecture Diagram](./docs/architecture.svg)
