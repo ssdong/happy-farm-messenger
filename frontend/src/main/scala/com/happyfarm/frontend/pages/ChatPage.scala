@@ -477,7 +477,13 @@ class ChatPage(
 
               messagesContainerEl match
                 case Some(el) =>
-                  if isNearBottom(el) then forceScrollBus.writer.onNext(())
+                  if isNearBottom(el) then
+                    forceScrollBus.writer.onNext(())
+                    chatWS.sendOne(
+                      CatchUpLastReadSeq(
+                        roomId = RoomId(roomId)
+                      )
+                    )
                   else
                     unreadCountVar.update(_ + 1)
                     showUnreadMessagesNotificationBubbleVar.set(true)

@@ -5,3 +5,7 @@ All notable changes to "Happy Farm" will be documented in this file.
 ### Changed
 - Auto-scrolling to "New Messages" separator when user navigate to chat page for the first time.
 - `FetchUnreadMessages` Logic: Automatically reconciles and receives missed messages after a WebSocket reconnection, specifically fixing stale data issues on mobile browsers when switching between apps. 
+
+## [0.7.0] - 2026-03-29
+### Changed
+- Messages Encryption - Storage

@@ -52,7 +52,9 @@ CREATE TABLE IF NOT EXISTS happyfarm.image_blobs (
     content_type            text NOT NULL,         -- e.g., image/webp, image/jpeg, image/png
     bytes                   bigint NOT NULL,       -- size in bytes
     sha256_hex              text NOT NULL,         -- integrity/dedup
-    data                    bytea NOT NULL,        -- the actual image bytes
+    data                    bytea NOT NULL,        -- the encrypted image bytes
+    encrypted_dek           bytea NOT NULL,
+    nonce                   bytea NOT NULL,
     created_at              timestamptz NOT NULL DEFAULT now(),
     UNIQUE (sha256_hex)
 );
@@ -62,7 +64,9 @@ CREATE TABLE IF NOT EXISTS happyfarm.audio_blobs (
     content_type            text NOT NULL,         -- e.g., audio/ogg, audio/mpeg, audio/aac
     bytes                   bigint NOT NULL,       -- size in bytes
     sha256_hex              text NOT NULL,         -- integrity/dedup
-    data                    bytea NOT NULL,        -- the actual audio bytes
+    data                    bytea NOT NULL,        -- the encrypted audio bytes
+    encrypted_dek           bytea NOT NULL,
+    nonce                   bytea NOT NULL,
     created_at              timestamptz NOT NULL DEFAULT now(),
     UNIQUE (sha256_hex)
 );
@@ -74,7 +78,9 @@ CREATE TABLE IF NOT EXISTS happyfarm.messages (
     user_canonical_id       uuid REFERENCES users(user_canonical_id) ON DELETE SET NULL, -- don't cascade delete upon sender_id, if sender account is revoked, display "deleted user" in client
 
     message_type            happyfarm.message_type NOT NULL,
-    message_text            text,
+    message_text            bytea,
+    encrypted_dek           bytea,
+    nonce                   bytea,
 
     image_id                uuid REFERENCES image_blobs(image_id) ON DELETE SET NULL,
 
@@ -85,9 +91,22 @@ CREATE TABLE IF NOT EXISTS happyfarm.messages (
     UNIQUE                  (room_id, message_id), -- dedup upon client retries sending the same message in case of hiccups
 
     CONSTRAINT message_payload_consistency CHECK (
-        (message_type = 'text'  AND message_text IS NOT NULL AND image_id IS NULL AND audio_id IS NULL) OR
-        (message_type = 'image' AND image_id IS NOT NULL AND message_text IS NULL AND audio_id IS NULL) OR
-        (message_type = 'audio' AND audio_id IS NOT NULL AND message_text IS NULL AND image_id IS NULL)
+        (message_type = 'text'
+        AND message_text IS NOT NULL
+        AND encrypted_dek IS NOT NULL
+        AND nonce IS NOT NULL
+        AND image_id IS NULL
+        AND audio_id IS NULL) OR
+        (message_type = 'image'
+        AND image_id IS NOT NULL
+        AND message_text IS NULL
+        AND encrypted_dek IS NULL
+        AND nonce IS NULL) OR
+        (message_type = 'audio'
+        AND audio_id IS NOT NULL
+        AND message_text IS NULL
+        AND encrypted_dek IS NULL
+        AND nonce IS NULL)
     )
 );
 

@@ -28,6 +28,7 @@ A messaging platform is a natural fit for the actor model, where deterministic m
 - Real-Time Messaging – Text chat powered by ZIO and an Actor-based backend, with delivery status, retry on failure, and unread indicators etc
 - Fault Isolation – Per-room Actors ensure failures in one chat room don’t affect others
 - Typing Indicators – Real-time user typing signals
+- E2E Encryption - Messages are encrypted in both transmission and storage
 
 ## Work In Progress
 - Image sharing
@@ -49,12 +50,15 @@ A messaging platform is a natural fit for the actor model, where deterministic m
 ### SignIn/Out flow
 <img src="./demo/SignInOutFlow.gif" width="50%"></img>
 
+### Encryption/Decryption For Messages In Different Languages
+<img src="./demo/languages.png" width="50%"></img>
+
 ## Development
 
 1. **Prerequisite**
    - Make sure the following are installed
      - Java 21
-     - Scala 3.7.2 (repo is compiled and tested against 3.7.2 - i started the project when 3.7.2 was released but feel free to upgrade to latest version and try out)
+     - Scala 3.7.2 (repo is compiled and tested against 3.7.2 - I started the project when 3.7.2 was released but feel free to upgrade to latest version and try out)
      - sbt 
      - Flyway 
      - scala-cli 
@@ -72,15 +76,23 @@ A messaging platform is a natural fit for the actor model, where deterministic m
      ```
 2. **Database Setup**
    - Start PostgreSQL locally
-   - Connect to your Postgres instance and run the commands in `db-set.sql`. This will create the required database and user.
+   - Connect to your Postgres instance via `psql -h localhost -p 5432 -U postgres` as superuser and run the commands in `db-set.sql`. This will create the required database and user.
    - From the project root directory, run:
      ```shell
         flyway migrate
        ```
      This applies all database migrations.
+   - Handy commands:
+     - `\l` - List all databases
+     - `\c <db_name>` - Connect to a different database
+     - `\dn` - List Schemas
+     - `\dt happyfarm.*` - List Tables in `happyfarm` schema
+     - `\d happyfarm.<table_name>` - Describe a table (Shows columns, types, and indices)
+     - `\q` - Quit the terminal.
+     - `psql "postgresql://user:password@host:port/database"` - Connecting to remotely hosted Postgres
 3. **Generate a Registration Token**
    - The application uses invite-only registration
-   - Navigate to the scripts directory and run:
+   - Navigate to the `scripts` directory and run:
      ```shell
      scala-cli insert-registration-token.sc
      ```
@@ -115,6 +127,15 @@ A messaging platform is a natural fit for the actor model, where deterministic m
 7. Publishing
     - `sbt releaseDockerRailway` builds a `linux/amd64` Docker image for deployment. It is named after Railway because I use Railway for personal hosting, but the image can be used more generally on compatible platforms
     - `sbt push` pushes the built image to GitHub Packages for Railway or other compatible platforms to pull and deploy
+8. KEK Generation
+    - `openssl rand -base64 32` It prints a Base64 string representing 32 random bytes if you want an env variable based KEK
+      - If you want to verify the length of the generated KEK is 32 bytes, run the following in a Python3 REPL
+      - ```
+        import base64, os
+        s = "<GENERATED_BASE64_FROM_OPENSSL>"
+        print(len(base64.b64decode(s)))
+        ```
+    - Or Extend `EncryptionService` and implement your own KEK rotation
 
 ## Architecture
 

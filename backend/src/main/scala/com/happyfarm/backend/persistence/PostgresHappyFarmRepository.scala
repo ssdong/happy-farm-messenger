@@ -32,8 +32,11 @@ import com.happyfarm.backend.persistence.HappyFarmRepository.PersistenceError.{
   NoMessagePersisted
 }
 import com.happyfarm.backend.persistence.HappyFarmRepository.{ AuthIO, ChatIO, PersistenceIO, Token }
+import com.happyfarm.backend.persistence.PostgresHappyFarmRepository.{ RawChatRoomOverview, RawMessage }
+import com.happyfarm.backend.setting.EncryptionSettings
 import com.happyfarm.backend.utils.CommonUtils
 import com.typesafe.scalalogging.LazyLogging
+import shared.model.MessageType.text
 import shared.{ MessageId, RoomId, UserId }
 import shared.model.{ ChatRoomOverview, Friendship, FriendshipStatus, Message, MessageType, UserInfo }
 import zio.{ Task, ZIO }
@@ -46,8 +49,10 @@ import javax.sql.DataSource
 import scala.util.{ Try, Using }
 import scala.math.max
 
-class PostgresHappyFarmRepository private (connectionProvider: () => Connection)
-    extends HappyFarmRepository
+class PostgresHappyFarmRepository private (
+    connectionProvider: () => Connection,
+    encryptionService: EncryptionService
+) extends HappyFarmRepository
     with LazyLogging:
 
   override def register(name: String, password: String, registrationToken: String): AuthIO[String] =
@@ -337,85 +342,10 @@ class PostgresHappyFarmRepository private (connectionProvider: () => Connection)
       .mapError(_ => FetchUsersFailure)
 
   override def fetchChatRooms(userId: UserId): ChatIO[Seq[ChatRoomOverview]] =
-    db { connection =>
-      val sql =
-        s"""
-            WITH members AS (
-              SELECT 
-                room_id,
-                last_read_seq  
-              FROM happyfarm.room_members
-              WHERE user_canonical_id = ?
-            )
-            SELECT DISTINCT ON (r.id)
-              r.id              AS room_id,
-              r.title           AS room_title,
-              rm.last_read_seq,
-              m.seq,
-              m.message_type,
-              m.message_text,
-              m.created_at   AS last_chatted,
-              CAST(user_canonical_id AS text) AS string_user_id,
-              i.content_type AS image_type,
-              i.data         AS image_data,
-              a.content_type AS audio_type,
-              a.data         AS audio_data
-            FROM happyfarm.rooms r
-            JOIN members rm ON rm.room_id = r.id
-            LEFT JOIN happyfarm.messages m ON m.room_id = r.id
-            LEFT JOIN happyfarm.image_blobs i ON m.image_id = i.image_id
-            LEFT JOIN happyfarm.audio_blobs a ON m.audio_id = a.audio_id
-            ORDER BY r.id, m.seq DESC;
-            """.stripMargin
-
-      Using.resource(connection.prepareStatement(sql)) { ps =>
-        ps.setObject(1, userId.toUUID)
-
-        Using.resource(ps.executeQuery()) { rs =>
-          val buf = Vector.newBuilder[ChatRoomOverview]
-
-          while rs.next() do
-            val roomId             = rs.getObject("room_id", classOf[UUID])
-            val lastReadSeq        = rs.getLong("last_read_seq")
-            val maybeGroupTitle    = Option(rs.getString("room_title")) // TODO: or use room_type
-            val maybeLastChatTs    = Option(rs.getTimestamp("last_chatted")).map(_.toInstant)
-            val maybeLastChatTsStr = maybeLastChatTs.map(formatter.format)
-
-            val groupOrPrivateChatTitle =
-              maybeGroupTitle.getOrElse(resolvePrivateChatTitle(connection, roomId, userId.toUUID))
-
-            val maybeLastMessage = maybeLastChatTsStr match
-              case Some(lastChatTsStr) =>
-                Some(
-                  Message(
-                    roomId = roomId,
-                    userId = rs.getString("string_user_id"),
-                    seq = rs.getLong("seq"),
-                    createdAt = lastChatTsStr,
-                    `type` = MessageType.valueOf(rs.getString("message_type")),
-                    text = Option(rs.getString("message_text")),
-                    imageType = Option(rs.getString("image_type")),
-                    image = Option(rs.getBytes("image_data")).map(_.toVector).getOrElse(Vector.empty),
-                    audioType = Option(rs.getString("audio_type")),
-                    audio = Option(rs.getBytes("audio_data")).map(_.toVector).getOrElse(Vector.empty)
-                  )
-                )
-              case None => None
-
-            buf += ChatRoomOverview(
-              id = roomId,
-              title = groupOrPrivateChatTitle,
-              lastReadSeq = lastReadSeq,
-              maybeLatestMessage = maybeLastMessage
-            )
-
-          buf.result()
-        }
-      }
-    }
-      .flatMap(ZIO.succeed(_))
-      .tapError(e => ZIO.logError(s"Database failure: ${e.getMessage}"))
-      .mapError(_ => FetchChatRoomsFailure)
+    for
+      rawChatRooms <- fetchRawChatRooms(userId)
+      rooms        <- ZIO.foreachPar(rawChatRooms)(sanitizeRawChatRoomOverview)
+    yield rooms
 
   override def fetchHistoryMessages(
       roomId: RoomId,
@@ -423,11 +353,13 @@ class PostgresHappyFarmRepository private (connectionProvider: () => Connection)
       offset: Long,
       size: Long
   ): ChatIO[Seq[Message]] =
-    (for messages <- db { connection =>
+    (for
+      rawMessages <- db { connection =>
         val lastReadSeq = getLastReadSeq(connection, roomId.toUUID, currentUserId.toUUID)
 
         fetchHistoryMessagesInternal(connection, roomId, currentUserId, offset, size, lastReadSeq)
       }
+      messages <- ZIO.foreachPar(rawMessages)(sanitizeRawMessage)
     yield messages)
       .tapError(e => ZIO.logError(s"Database failure: ${e.getMessage}"))
       .mapError(_ => FetchHistoryMessagesFailure)
@@ -438,7 +370,7 @@ class PostgresHappyFarmRepository private (connectionProvider: () => Connection)
 
       latestSeq = maybeLatestMessageSeq.getOrElse(0L)
 
-      messages <-
+      rawMessages <-
         db { connection =>
           val lastReadSeq = getLastReadSeq(connection, roomId.toUUID, currentUserId.toUUID)
           // Potential improvement:
@@ -461,6 +393,7 @@ class PostgresHappyFarmRepository private (connectionProvider: () => Connection)
             lastReadSeq
           )
         }
+      messages <- ZIO.foreachPar(rawMessages)(sanitizeRawMessage)
     yield messages)
       .tapError(e => ZIO.logError(s"Database failure: ${e.getMessage}"))
       .mapError(_ => FetchHistoryMessagesFailure) // This is essentially still fetching "history" messages
@@ -656,7 +589,7 @@ class PostgresHappyFarmRepository private (connectionProvider: () => Connection)
 
       roomId <- ZIO.fromOption(maybeRoomId).orElseFail(StartChatFailure)
 
-      maybeMessage <- db { connection =>
+      maybeRawMessage <- db { connection =>
         val sql =
           """
             SELECT
@@ -664,6 +597,8 @@ class PostgresHappyFarmRepository private (connectionProvider: () => Connection)
                 m.seq,
                 m.message_type,
                 m.message_text,
+                m.encrypted_dek,
+                m.nonce,
                 m.created_at,
                 CAST(u.user_canonical_id AS text) AS string_user_id,
                 u.name,
@@ -686,18 +621,20 @@ class PostgresHappyFarmRepository private (connectionProvider: () => Connection)
             if rs.next() then
               val userId = rs.getString("string_user_id")
               Some(
-                Message(
+                RawMessage(
                   roomId = rs.getObject("room_id", classOf[UUID]),
                   userId = userId,
                   userName = Some(rs.getString("name")),
                   seq = rs.getLong("seq"),
                   createdAt = formatter.format(rs.getTimestamp("created_at").toInstant),
                   `type` = MessageType.valueOf(rs.getString("message_type")),
-                  text = Option(rs.getString("message_text")),
+                  encryptedText = Option(rs.getBytes("message_text")),
+                  encryptedDek = Option(rs.getBytes("encrypted_dek")),
+                  nonce = Option(rs.getBytes("nonce")),
                   imageType = Option(rs.getString("image_type")),
-                  image = Option(rs.getBytes("image_data")).map(_.toVector).getOrElse(Vector.empty),
+                  image = Option(rs.getBytes("image_data")),
                   audioType = Option(rs.getString("audio_type")),
-                  audio = Option(rs.getBytes("audio_data")).map(_.toVector).getOrElse(Vector.empty),
+                  audio = Option(rs.getBytes("audio_data")),
                   isMe = currentUserIdUuid.toString == userId
                 )
               )
@@ -705,6 +642,7 @@ class PostgresHappyFarmRepository private (connectionProvider: () => Connection)
           }
         }
       }.mapError(_ => StartChatFailure)
+      maybeMessage <- ZIO.foreach(maybeRawMessage)(sanitizeRawMessage)
     yield (RoomId(roomId), friendName, maybeMessage)
 
   override def persistTextMessage(
@@ -714,72 +652,214 @@ class PostgresHappyFarmRepository private (connectionProvider: () => Connection)
       messageId: MessageId,
       seq: Long
   ): PersistenceIO[Message] =
+    for
+      encryptedTuple <- ZIO
+        .fromEither(encryptionService.encrypt(message))
+        .tapError(e => ZIO.logError(s"Encryption failure: $e"))
+        .mapError(_ => MessagePersistenceFailure)
+
+      (encryptedText, encryptedDek, nonce) = encryptedTuple
+
+      result <-
+        db { connection =>
+          val sql =
+            """
+              |WITH inserted AS (
+              |    INSERT INTO happyfarm.messages
+              |    (room_id, seq, message_id, user_canonical_id, message_type, message_text, encrypted_dek, nonce, created_at)
+              |    VALUES (?, ?, ?, ?, 'text', ?, ?, ?, now())
+              |    RETURNING room_id, seq, message_id, user_canonical_id, message_type, message_text, created_at
+              |)
+              |SELECT
+              |    i.*,
+              |    u.name
+              |FROM inserted as i
+              |JOIN happyfarm.users u
+              |ON i.user_canonical_id = u.user_canonical_id
+              |""".stripMargin
+
+          Using.resource(connection.prepareStatement(sql)) { preparedStatement =>
+            // Explicit casting - proves we know what we're doing that the follow ids are UUID
+            preparedStatement.setObject(1, roomId.toUUID)
+            preparedStatement.setLong(2, seq)
+            preparedStatement.setObject(3, messageId.toUUID)
+            preparedStatement.setObject(4, userId.toUUID)
+            preparedStatement.setBytes(5, encryptedText)
+            preparedStatement.setBytes(6, encryptedDek)
+            preparedStatement.setBytes(7, nonce)
+
+            val rs = preparedStatement.executeQuery()
+            if rs.next() then
+              Some(
+                Message(
+                  roomId = rs.getObject("room_id", classOf[UUID]),
+                  userId = rs.getString("user_canonical_id"),
+                  userName = Some(rs.getString("name")),
+                  seq = rs.getLong("seq"),
+                  createdAt = formatter.format(rs.getTimestamp("created_at").toInstant),
+                  `type` = MessageType.valueOf(rs.getString("message_type")),
+                  text = Some(message),
+                  imageType = None,
+                  image = Vector.empty,
+                  audioType = None,
+                  audio = Vector.empty,
+                  isMe = true
+                )
+              )
+            else None
+          }
+        }.flatMap {
+          case Some(message) => ZIO.succeed(message)
+          case None          =>
+            // This is a bizarre situation. The SQL is syntactically correct but did not result in any
+            // rows being inserted. Need further investigation..
+            ZIO.logError(s"Message $message failed to be persisted for room $roomId from user $userId") *> ZIO
+              .fail(NoMessagePersisted)
+        }.tapError { e =>
+          ZIO.logError(s"Database failure: ${e.getMessage}")
+        }.mapError {
+          case _: SQLIntegrityConstraintViolationException =>
+            // This is likely due to user retries sending the same message when there are network hiccups
+            // and one of the retries worked while the rest are rejected with violation
+            DuplicateMessage
+          case e: SQLException if e.getSQLState.startsWith("23") =>
+            // https://www.ibm.com/docs/en/db2w-as-a-service?topic=messages-sqlstate#rsttmsg__code23
+            // A more defensive approach that indicates a "Constraint Violation" code if the driver did
+            // not wrap the exception into a "SQLIntegrityConstraintViolationException" intelligently
+            DuplicateMessage
+          case _ =>
+            MessagePersistenceFailure
+        }
+    yield result
+
+  private def fetchRawChatRooms(userId: UserId): ChatIO[Seq[RawChatRoomOverview]] =
     db { connection =>
       val sql =
-        """
-          |WITH inserted AS (
-          |    INSERT INTO happyfarm.messages
-          |    (room_id, seq, message_id, user_canonical_id, message_type, message_text, created_at)
-          |    VALUES (?, ?, ?, ?, 'text', ?, now())
-          |    RETURNING room_id, seq, message_id, user_canonical_id, message_type, message_text, created_at
-          |)
-          |SELECT
-          |    i.*,
-          |    u.name
-          |FROM inserted as i
-          |JOIN happyfarm.users u
-          |ON i.user_canonical_id = u.user_canonical_id
-          |""".stripMargin
-
-      Using.resource(connection.prepareStatement(sql)) { preparedStatement =>
-        // Explicit casting - proves we know what we're doing that the follow ids are UUID
-        preparedStatement.setObject(1, roomId.toUUID)
-        preparedStatement.setLong(2, seq)
-        preparedStatement.setObject(3, messageId.toUUID)
-        preparedStatement.setObject(4, userId.toUUID)
-        preparedStatement.setString(5, message)
-
-        val rs = preparedStatement.executeQuery()
-        if rs.next() then
-          Some(
-            Message(
-              roomId = rs.getObject("room_id", classOf[UUID]),
-              userId = rs.getString("user_canonical_id"),
-              userName = Some(rs.getString("name")),
-              seq = rs.getLong("seq"),
-              createdAt = formatter.format(rs.getTimestamp("created_at").toInstant),
-              `type` = MessageType.valueOf(rs.getString("message_type")),
-              text = Option(rs.getString("message_text")),
-              imageType = None,
-              image = Vector.empty,
-              audioType = None,
-              audio = Vector.empty,
-              isMe = true
-            )
+        s"""
+          WITH members AS (
+            SELECT
+              room_id,
+              last_read_seq
+            FROM happyfarm.room_members
+            WHERE user_canonical_id = ?
           )
-        else None
+          SELECT DISTINCT ON (r.id)
+            r.id              AS room_id,
+            r.title           AS room_title,
+            rm.last_read_seq,
+            m.seq,
+            m.message_type,
+            m.message_text,
+            m.encrypted_dek,
+            m.nonce,
+            m.created_at   AS last_chatted,
+            CAST(user_canonical_id AS text) AS string_user_id,
+            i.content_type AS image_type,
+            i.data         AS image_data,
+            a.content_type AS audio_type,
+            a.data         AS audio_data
+          FROM happyfarm.rooms r
+          JOIN members rm ON rm.room_id = r.id
+          LEFT JOIN happyfarm.messages m ON m.room_id = r.id
+          LEFT JOIN happyfarm.image_blobs i ON m.image_id = i.image_id
+          LEFT JOIN happyfarm.audio_blobs a ON m.audio_id = a.audio_id
+          ORDER BY r.id, m.seq DESC;
+          """.stripMargin
+
+      Using.resource(connection.prepareStatement(sql)) { ps =>
+        ps.setObject(1, userId.toUUID)
+
+        Using.resource(ps.executeQuery()) { rs =>
+          val buf = Vector.newBuilder[RawChatRoomOverview]
+
+          while rs.next() do
+            val roomId             = rs.getObject("room_id", classOf[UUID])
+            val lastReadSeq        = rs.getLong("last_read_seq")
+            val maybeGroupTitle    = Option(rs.getString("room_title")) // TODO: or use room_type
+            val maybeLastChatTs    = Option(rs.getTimestamp("last_chatted")).map(_.toInstant)
+            val maybeLastChatTsStr = maybeLastChatTs.map(formatter.format)
+
+            val groupOrPrivateChatTitle =
+              maybeGroupTitle.getOrElse(resolvePrivateChatTitle(connection, roomId, userId.toUUID))
+
+            val maybeLastMessage = maybeLastChatTsStr match
+              case Some(lastChatTsStr) =>
+                Some(
+                  RawMessage(
+                    roomId = roomId,
+                    userId = rs.getString("string_user_id"),
+                    seq = rs.getLong("seq"),
+                    createdAt = lastChatTsStr,
+                    `type` = MessageType.valueOf(rs.getString("message_type")),
+                    encryptedText = Option(rs.getBytes("message_text")),
+                    encryptedDek = Option(rs.getBytes("encrypted_dek")),
+                    nonce = Option(rs.getBytes("nonce")),
+                    imageType = Option(rs.getString("image_type")),
+                    image = Option(rs.getBytes("image_data")),
+                    audioType = Option(rs.getString("audio_type")),
+                    audio = Option(rs.getBytes("audio_data"))
+                  )
+                )
+              case None => None
+
+            buf += RawChatRoomOverview(
+              id = roomId,
+              title = groupOrPrivateChatTitle,
+              lastReadSeq = lastReadSeq,
+              maybeLatestMessage = maybeLastMessage
+            )
+
+          buf.result()
+        }
       }
-    }.flatMap {
-      case Some(message) => ZIO.succeed(message)
-      case None          =>
-        // This is a bizarre situation. The SQL is syntactically correct but did not result in any
-        // rows being inserted. Need further investigation..
-        ZIO.logError(s"Message $message failed to be persisted for room $roomId from user $userId") *> ZIO
-          .fail(NoMessagePersisted)
-    }.tapError { e =>
-      ZIO.logError(s"Database failure: ${e.getMessage}")
-    }.mapError {
-      case _: SQLIntegrityConstraintViolationException =>
-        // This is likely due to user retries sending the same message when there are network hiccups
-        // and one of the retries worked while the rest are rejected with violation
-        DuplicateMessage
-      case e: SQLException if e.getSQLState.startsWith("23") =>
-        // https://www.ibm.com/docs/en/db2w-as-a-service?topic=messages-sqlstate#rsttmsg__code23
-        // A more defensive approach that indicates a "Constraint Violation" code if the driver did
-        // not wrap the exception into a "SQLIntegrityConstraintViolationException" intelligently
-        DuplicateMessage
-      case _ =>
-        MessagePersistenceFailure
+    }
+      .flatMap(ZIO.succeed(_))
+      .tapError(e => ZIO.logError(s"Database failure: ${e.getMessage}"))
+      .mapError(_ => FetchChatRoomsFailure)
+
+  private def sanitizeRawChatRoomOverview(raw: RawChatRoomOverview): ZIO[Any, Nothing, ChatRoomOverview] =
+    for maybeSanitizedMessage <- ZIO.foreach(raw.maybeLatestMessage)(sanitizeRawMessage)
+    yield ChatRoomOverview(
+      id = raw.id,
+      title = raw.title,
+      lastReadSeq = raw.lastReadSeq,
+      maybeLatestMessage = maybeSanitizedMessage
+    )
+
+  private def sanitizeRawMessage(raw: RawMessage): ZIO[Any, Nothing, Message] =
+    val decryptedTextTask = (for
+      text  <- ZIO.fromOption(raw.encryptedText)
+      dek   <- ZIO.fromOption(raw.encryptedDek)
+      nonce <- ZIO.fromOption(raw.nonce)
+      decrypted <- ZIO.fromEither(
+        encryptionService.decrypt(encryptedText = text, encryptedDek = dek, nonce = nonce)
+      )
+    yield decrypted).tapError {
+      case e: EncryptionError =>
+        ZIO.logError(s"Decryption failed for msg ${raw.seq} in room ${raw.roomId}: $e")
+      case None => ZIO.unit // Ignore - means no text
+    }.option // flattens both to None (missing fields or failed decryption)
+
+    // TODO: The following will also go through encryption/decryption flow once we support image/audio
+    val imageData = raw.image.map(_.toVector).getOrElse(Vector.empty)
+    val audioData = raw.audio.map(_.toVector).getOrElse(Vector.empty)
+
+    decryptedTextTask.map { maybeText =>
+      Message(
+        roomId = raw.roomId,
+        userId = raw.userId,
+        userName = raw.userName,
+        seq = raw.seq,
+        createdAt = raw.createdAt,
+        `type` = raw.`type`,
+        text = maybeText,
+        imageType = raw.imageType,
+        image = imageData,
+        audioType = raw.audioType,
+        audio = audioData,
+        isMe = raw.isMe,
+        unreadMarker = raw.unreadMarker
+      )
     }
 
   private def fetchHistoryMessagesInternal(
@@ -789,7 +869,7 @@ class PostgresHappyFarmRepository private (connectionProvider: () => Connection)
       offset: Long,
       size: Long,
       lastReadSeq: Long
-  ): Seq[Message] =
+  ): Seq[RawMessage] =
     val sql =
       """
         SELECT * FROM (
@@ -798,6 +878,8 @@ class PostgresHappyFarmRepository private (connectionProvider: () => Connection)
               m.seq,
               m.message_type,
               m.message_text,
+              m.encrypted_dek,
+              m.nonce,
               m.created_at,
               CAST(u.user_canonical_id AS text) AS string_user_id,
               u.name,
@@ -823,22 +905,24 @@ class PostgresHappyFarmRepository private (connectionProvider: () => Connection)
       ps.setLong(3, size)
 
       Using.resource(ps.executeQuery()) { rs =>
-        val buf = Vector.newBuilder[Message]
+        val buf = Vector.newBuilder[RawMessage]
 
         while rs.next() do
           val userId = rs.getString("string_user_id")
-          buf += Message(
+          buf += RawMessage(
             roomId = rs.getObject("room_id", classOf[UUID]),
             userId = userId,
             userName = Some(rs.getString("name")),
             seq = rs.getLong("seq"),
             createdAt = formatter.format(rs.getTimestamp("created_at").toInstant),
             `type` = MessageType.valueOf(rs.getString("message_type")),
-            text = Option(rs.getString("message_text")),
+            encryptedText = Option(rs.getBytes("message_text")),
+            encryptedDek = Option(rs.getBytes("encrypted_dek")),
+            nonce = Option(rs.getBytes("nonce")),
             imageType = Option(rs.getString("image_type")),
-            image = Option(rs.getBytes("image_data")).map(_.toVector).getOrElse(Vector.empty),
+            image = Option(rs.getBytes("image_data")),
             audioType = Option(rs.getString("audio_type")),
-            audio = Option(rs.getBytes("audio_data")).map(_.toVector).getOrElse(Vector.empty),
+            audio = Option(rs.getBytes("audio_data")),
             isMe = currentUserId.toString == userId,
             unreadMarker = rs.getLong("seq") > lastReadSeq
           )
@@ -945,5 +1029,38 @@ class PostgresHappyFarmRepository private (connectionProvider: () => Connection)
     else (anotherUuid, uuid)
 
 object PostgresHappyFarmRepository:
-  def apply(connectionProvider: DataSource): PostgresHappyFarmRepository =
-    new PostgresHappyFarmRepository(() => connectionProvider.getConnection)
+  def apply(
+      connectionProvider: DataSource,
+      encryptionService: EncryptionService
+  ): PostgresHappyFarmRepository =
+    new PostgresHappyFarmRepository(
+      () => connectionProvider.getConnection,
+      encryptionService
+    )
+
+  case class RawMessage(
+      roomId: UUID,
+      userId: String,
+      userName: Option[String] = None,
+      seq: Long,
+      createdAt: String,
+      `type`: MessageType,
+      // Text-specific encrypted data
+      encryptedText: Option[Array[Byte]],
+      encryptedDek: Option[Array[Byte]],
+      nonce: Option[Array[Byte]],
+      // Image/Audio blobs
+      imageType: Option[String],
+      image: Option[Array[Byte]],
+      audioType: Option[String],
+      audio: Option[Array[Byte]],
+      isMe: Boolean = false,
+      unreadMarker: Boolean = false
+  )
+
+  case class RawChatRoomOverview(
+      id: UUID,
+      title: String,
+      lastReadSeq: Long,
+      maybeLatestMessage: Option[RawMessage]
+  )

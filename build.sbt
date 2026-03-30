@@ -1,7 +1,7 @@
 import scala.sys.process.Process
 import sbtcrossproject.CrossPlugin.autoImport.{ crossProject, CrossType }
 
-ThisBuild / version := "0.6.0"
+ThisBuild / version := "0.7.0"
 
 ThisBuild / scalaVersion := "3.7.2"
 
@@ -60,17 +60,16 @@ lazy val backend = project
   )
   .dependsOn(shared.jvm)
 
-
 lazy val pushGHCR = taskKey[Unit]("Push Docker image to GHCR")
 lazy val backendRailway = project
   .in(file("backend"))
   .enablePlugins(JavaAppPackaging, DockerPlugin)
   .settings(
     commonBackendSettings,
-    name := "happy-farm-backend-railway",
+    name                      := "happy-farm-backend-railway",
     Docker / dockerRepository := Some("ghcr.io/ssdong"),
-    Docker / version := (ThisBuild / version).value,
-    target := baseDirectory.value / "target-railway",
+    Docker / version          := (ThisBuild / version).value,
+    target                    := baseDirectory.value / "target-railway",
     Docker / dockerBuildCommand := {
       val platform = "linux/amd64"
       // .value on dockerAlias automatically combines repository + name + version
@@ -88,8 +87,8 @@ lazy val backendRailway = project
       )
     },
     pushGHCR := {
-      val alias = (Docker / dockerAlias).value.toString
-      val cmd = Seq("docker", "push", alias)
+      val alias    = (Docker / dockerAlias).value.toString
+      val cmd      = Seq("docker", "push", alias)
       val exitCode = Process(cmd).!
 
       if (exitCode != 0) sys.error(s"Docker push failed with exit code $exitCode")
